@@ -1,5 +1,14 @@
 FROM python:3.11-slim
 
+# OCI image labels — link the published image back to source + license.
+LABEL org.opencontainers.image.title="ursa-oscar-watcher" \
+      org.opencontainers.image.description="URSA-OSCAR file-watcher daemon (Phase 4 scaffold). Idles until the watcher loop ships." \
+      org.opencontainers.image.source="https://github.com/burrellka/URSA-OSCAR" \
+      org.opencontainers.image.url="https://github.com/burrellka/URSA-OSCAR" \
+      org.opencontainers.image.documentation="https://github.com/burrellka/URSA-OSCAR/blob/main/README.md" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later" \
+      org.opencontainers.image.vendor="URSA-OSCAR project"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

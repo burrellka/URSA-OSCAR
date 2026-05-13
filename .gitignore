@@ -1,5 +1,7 @@
-# Runtime data
-data/
+# Runtime data — repo-root /data/ only (this is the bind-mounted volume
+# in compose). Backend's `backend/src/ursa_oscar/data/` package directory
+# is intentionally tracked (it ships community defaults inside the wheel).
+/data/
 *.duckdb
 *.duckdb.wal
 *.duckdb-wal
@@ -28,9 +30,9 @@ backend/tests/regression/test_oscar_parity.py
 
 # Per-instance config (Phase 3) — vocabularies and user profile live
 # on the mounted volume, never in git. Repo ships *.community-default
-# stubs only.
-data/vocab.json
-data/profile.json
+# stubs only (packaged inside backend/src/ursa_oscar/data/).
+/data/vocab.json
+/data/profile.json
 
 # Python
 __pycache__/

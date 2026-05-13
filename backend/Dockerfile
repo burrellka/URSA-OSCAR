@@ -1,5 +1,14 @@
 FROM python:3.11-slim AS base
 
+# OCI image labels — link the published image back to source + license.
+LABEL org.opencontainers.image.title="ursa-oscar-api" \
+      org.opencontainers.image.description="URSA-OSCAR REST API + analytics + ingestion. Self-hosted CPAP analytics." \
+      org.opencontainers.image.source="https://github.com/burrellka/URSA-OSCAR" \
+      org.opencontainers.image.url="https://github.com/burrellka/URSA-OSCAR" \
+      org.opencontainers.image.documentation="https://github.com/burrellka/URSA-OSCAR/blob/main/README.md" \
+      org.opencontainers.image.licenses="GPL-3.0-or-later" \
+      org.opencontainers.image.vendor="URSA-OSCAR project"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
