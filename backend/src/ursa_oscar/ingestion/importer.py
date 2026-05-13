@@ -227,21 +227,33 @@ def import_path(
             ))
             continue
 
-    # Status logic:
-    # - completed:  at least one night imported (possibly with skips)
-    # - failed:     zero nights imported AND at least one error tried to import
-    # - completed:  zero nights AND zero errors (i.e., source dir had no night dirs at all)
-    if nights_imported > 0:
+    # Phase 3 Item 1C: tri-state status discriminator.
+    #   completed — every attempted night landed cleanly; nights_skipped == 0
+    #   partial   — at least one night landed AND at least one was skipped
+    #   failed    — no nights landed; either every dir errored or the
+    #               source had no night dirs but the call asked for an
+    #               import (we treat "no dirs found" as completed below
+    #               so the importer doesn't shout when pointed at an
+    #               empty SD card.)
+    if nights_imported > 0 and not skipped:
         status = "completed"
         error_message: str | None = None
+    elif nights_imported > 0 and skipped:
+        status = "partial"
+        error_message = (
+            f"{nights_imported} night(s) imported; {len(skipped)} skipped. "
+            f"See the skipped list for per-night reasons."
+        )
     elif skipped:
+        # Zero imported AND at least one skip attempt — every dir errored.
         status = "failed"
-        # Aggregate reasons by frequency so the UI gets a useful summary.
         error_message = (
             f"All {len(skipped)} night dir(s) failed to import. "
             f"First error: {skipped[0].reason}"
         )
     else:
+        # Zero imported, zero skipped — source had no recognizable night
+        # dirs at all. Benign no-op rather than failure.
         status = "completed"
         error_message = None
 

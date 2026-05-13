@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date as date_t
+from datetime import datetime, timezone
 from typing import Optional
 
 from ...models.domain import NightlySummary
@@ -41,6 +42,13 @@ def upsert(db: DuckDBManager, night: NightlySummary) -> None:
     placeholders = ", ".join(["?"] * len(_FIELDS))
     columns = ", ".join(_FIELDS)
     payload = night.model_dump()
+    # Phase 3 Item 1B: last_updated must reflect "when this row was
+    # written," not whatever the analytics pipeline happened to leave on
+    # the in-memory model (which was always None and got inserted as
+    # NULL — overriding the column's DEFAULT CURRENT_TIMESTAMP and
+    # making the Daily View's "last imported" header render blank).
+    # Always stamp it server-side at write time.
+    payload["last_updated"] = datetime.now(timezone.utc)
     values = tuple(payload[f] for f in _FIELDS)
 
     # Held across BEGIN/COMMIT so concurrent readers can't observe the

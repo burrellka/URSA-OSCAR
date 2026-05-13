@@ -62,8 +62,14 @@ export default function ImportPage() {
           <div style={{ marginTop: '1rem' }}>
             <span
               className={`status-pill ${
+                // Phase 3 Item 1C — tri-state visual mapping:
+                // completed → green, partial → orange, failed → red.
+                // pending / running retain the neutral 'warn' look used
+                // by Phase 4's async-job surface.
                 result.status === 'completed' ? 'good' :
-                result.status === 'failed' ? 'bad' : 'warn'
+                result.status === 'partial' ? 'warn' :
+                result.status === 'failed' ? 'bad' :
+                'warn'
               }`}
               style={{ marginRight: '0.5rem' }}
             >

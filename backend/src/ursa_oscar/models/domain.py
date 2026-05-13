@@ -121,7 +121,14 @@ class ImportLogEntry(BaseModel):
     nights_imported: int
     earliest_date: date_t | None = None
     latest_date: date_t | None = None
-    status: Literal["pending", "running", "completed", "failed"]
+    # Phase 3 Item 1C: tri-state discriminator derived in the importer.
+    #   completed — every night dir landed cleanly; nights_skipped == 0
+    #   partial   — some nights landed, some were skipped with reasons
+    #   failed    — no nights imported; either every dir errored or a
+    #               fatal pre-loop error (path missing, etc.)
+    # `pending` and `running` are retained for the Phase 4 async-job
+    # surface where an import is in flight.
+    status: Literal["pending", "running", "completed", "partial", "failed"]
     error_message: str | None = None
     # Phase 2 polish 0.4.2 — per-night resilient import. Empty / corrupt
     # night dirs are skipped individually rather than failing the whole

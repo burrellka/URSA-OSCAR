@@ -32,8 +32,13 @@ def test_parses_feature_settings(fixture_root: Path):
     assert s.epr_level == 3
     # AutoRampFeature.RampEnable="Off" -> normalized to 0
     assert s.ramp_time_minutes == 0
-    # ClimateFeature.ClimateControl="Auto"
-    assert s.humidity_level == "Auto"
+    # Schema v2 (Phase 2 polish, 0.4.1): humidity_level now always holds
+    # the numeric HumidifierLevel (e.g. "4") when the humidifier is on,
+    # regardless of climate-control state. ClimateControl="Auto" is
+    # surfaced separately as s.climate_control.
+    assert s.humidity_level == "4"
+    assert s.climate_control == "Auto"
+    assert s.humidifier_status == "On"
     # CircuitFeature.MaskType="Pillows"
     assert s.mask_type == "Pillows"
 

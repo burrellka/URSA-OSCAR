@@ -7,12 +7,23 @@ from ...models.domain import NightlyEvent
 from ..db import DuckDBManager
 
 
-_INSERT_FIELDS = (
+# Columns selected on read (id included so the response carries the
+# DB-assigned surrogate key).
+_SELECT_FIELDS = (
     "id", "date", "timestamp", "session_id", "event_type", "duration_seconds",
     "pressure_at_event", "epap_at_event", "flow_at_event", "leak_at_event",
 )
 
-_SELECT_FIELDS = _INSERT_FIELDS
+# Columns specified on INSERT. Note `id` is intentionally omitted — Phase 3
+# Item 1A moved id allocation into the table's DEFAULT nextval() so the
+# sequence advance is coupled to a successful row write (rather than the
+# previous pattern of a Python loop pulling nextval() up front, which could
+# desync the sequence if the INSERT failed midway). The DB assigns the id;
+# RETURNING reads it back if the caller cares.
+_INSERT_FIELDS = (
+    "date", "timestamp", "session_id", "event_type", "duration_seconds",
+    "pressure_at_event", "epap_at_event", "flow_at_event", "leak_at_event",
+)
 
 
 def bulk_insert(db: DuckDBManager, events: list[NightlyEvent]) -> int:
@@ -25,25 +36,43 @@ def bulk_insert(db: DuckDBManager, events: list[NightlyEvent]) -> int:
     if not events:
         return 0
 
-    # nextval() + executemany must share one locked window so we don't
-    # collide with concurrent inserts allocating the same id range.
-    with db.serialized() as conn:
-        rows = []
-        for e in events:
-            eid = e.id
-            if eid is None:
-                eid = conn.execute("SELECT nextval('nightly_events_id_seq')").fetchone()[0]
-            payload = e.model_dump()
-            payload["id"] = eid
-            rows.append(tuple(payload[f] for f in _INSERT_FIELDS))
+    # Phase 3 Item 1A: id is assigned by the DB via DEFAULT nextval(), so the
+    # INSERT statement omits the id column entirely. If a caller pre-set
+    # event.id (e.g., for a deterministic test seed), we honor that path
+    # with a separate per-row INSERT that includes id; otherwise the bulk
+    # executemany is used. The DEFAULT/RETURNING split keeps sequence
+    # advancement coupled to successful writes — partial-rollback no
+    # longer leaves the sequence ahead of the table.
+    explicit_id_rows: list[tuple] = []
+    default_id_rows: list[tuple] = []
+    for e in events:
+        payload = e.model_dump()
+        if e.id is not None:
+            # Include id at the front of the tuple.
+            explicit_id_rows.append(
+                (e.id, *(payload[f] for f in _INSERT_FIELDS))
+            )
+        else:
+            default_id_rows.append(tuple(payload[f] for f in _INSERT_FIELDS))
 
-        placeholders = ", ".join(["?"] * len(_INSERT_FIELDS))
-        columns = ", ".join(_INSERT_FIELDS)
-        conn.executemany(
-            f"INSERT INTO nightly_events ({columns}) VALUES ({placeholders})",
-            rows,
-        )
-        return len(rows)
+    columns_no_id = ", ".join(_INSERT_FIELDS)
+    placeholders_no_id = ", ".join(["?"] * len(_INSERT_FIELDS))
+
+    columns_with_id = "id, " + columns_no_id
+    placeholders_with_id = "?, " + placeholders_no_id
+
+    with db.serialized() as conn:
+        if default_id_rows:
+            conn.executemany(
+                f"INSERT INTO nightly_events ({columns_no_id}) VALUES ({placeholders_no_id})",
+                default_id_rows,
+            )
+        if explicit_id_rows:
+            conn.executemany(
+                f"INSERT INTO nightly_events ({columns_with_id}) VALUES ({placeholders_with_id})",
+                explicit_id_rows,
+            )
+        return len(events)
 
 
 def delete_for_date(db: DuckDBManager, target: date_t) -> int:

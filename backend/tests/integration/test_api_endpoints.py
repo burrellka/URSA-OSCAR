@@ -49,13 +49,20 @@ def test_healthz(api_client):
     assert body["service"] == "ursa-oscar-api"
 
 
-def test_list_nights_returns_all_four(api_client):
+def test_list_nights_returns_canonical_four(api_client):
+    """The 4 canonical-targets nights must be present, in date order. Extra
+    fixture nights are allowed (the regression set grows organically — see
+    canonical_targets.py docstring), so this test asserts the four are a
+    subset of the returned list and that dates are sorted ascending."""
     r = api_client.get("/api/v1/nights")
     assert r.status_code == 200
     nights = r.json()
-    assert len(nights) == 4
     dates = [n["date"] for n in nights]
-    assert dates == ["2026-05-07", "2026-05-08", "2026-05-09", "2026-05-10"]
+    canonical = {"2026-05-07", "2026-05-08", "2026-05-09", "2026-05-10"}
+    assert canonical.issubset(set(dates)), (
+        f"Missing canonical nights. Got: {dates}, expected ⊇ {canonical}"
+    )
+    assert dates == sorted(dates), "Nights should be returned in ascending date order"
 
 
 def test_list_nights_range_filter(api_client):
@@ -73,6 +80,37 @@ def test_get_night_by_date(api_client):
     # Canonical: AHI 3.129, session_count 2
     assert abs(body["total_ahi"] - 3.129) < 0.01
     assert body["session_count"] == 2
+
+
+def test_get_night_includes_last_updated(api_client):
+    """Phase 3 Item 1B: last_updated must round-trip through the API so
+    the Daily View Device Settings card can render 'last imported {ts}'.
+
+    Regression: prior to v0.5.0 the in-memory NightlySummary carried
+    last_updated=None which was written as a literal NULL, suppressing
+    the column's DEFAULT CURRENT_TIMESTAMP. The fix stamps the timestamp
+    server-side at write time. This test guards against a regression of
+    that behavior — every imported night must come back with a non-null
+    last_updated parseable as an ISO datetime."""
+    from datetime import datetime
+
+    r = api_client.get("/api/v1/night/2026-05-10")
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("last_updated") is not None, (
+        "Expected last_updated to round-trip through the API; got None. "
+        "Likely cause: nights.upsert wrote NULL instead of stamping the "
+        "timestamp server-side, suppressing the column's DEFAULT."
+    )
+    # Must parse as an ISO datetime — FastAPI serializes datetimes that way.
+    parsed = datetime.fromisoformat(body["last_updated"].replace("Z", "+00:00"))
+    # And the value must be recent (last 5 minutes), since this api_client
+    # fixture re-imports the fixtures fresh at test setup.
+    age_seconds = (datetime.now(parsed.tzinfo) - parsed).total_seconds()
+    assert 0 <= age_seconds < 300, (
+        f"last_updated should be recent (this test just imported); "
+        f"got {body['last_updated']} which is {age_seconds:.0f}s old."
+    )
 
 
 def test_get_night_404(api_client):

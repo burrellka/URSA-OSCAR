@@ -64,8 +64,15 @@ ALTER TABLE nightly_summary ADD COLUMN IF NOT EXISTS smart_start VARCHAR;
 ALTER TABLE nightly_summary ADD COLUMN IF NOT EXISTS temperature_celsius DOUBLE;
 ALTER TABLE nightly_summary ADD COLUMN IF NOT EXISTS temperature_enable VARCHAR;
 
+-- Sequence MUST be created before nightly_events so the DEFAULT can reference it.
+CREATE SEQUENCE IF NOT EXISTS nightly_events_id_seq START 1;
 CREATE TABLE IF NOT EXISTS nightly_events (
-    id BIGINT PRIMARY KEY,
+    -- Phase 3 Item 1A: id allocation lives inside the INSERT transaction
+    -- via DEFAULT nextval(). Eliminates the pre-fetch race where a
+    -- Python loop pulled IDs out of the sequence and a later INSERT
+    -- could fail mid-batch, leaving the sequence advanced past the
+    -- highest committed row and producing later "Duplicate key" errors.
+    id BIGINT PRIMARY KEY DEFAULT nextval('nightly_events_id_seq'),
     date DATE NOT NULL,
     timestamp TIMESTAMP NOT NULL,
     session_id INTEGER,
@@ -76,6 +83,9 @@ CREATE TABLE IF NOT EXISTS nightly_events (
     flow_at_event DOUBLE,
     leak_at_event DOUBLE
 );
+-- Schema-v2-to-v3 migration: existing v1/v2 tables had `id BIGINT PRIMARY KEY`
+-- with no DEFAULT. ALTER COLUMN SET DEFAULT brings them in line.
+ALTER TABLE nightly_events ALTER COLUMN id SET DEFAULT nextval('nightly_events_id_seq');
 CREATE INDEX IF NOT EXISTS idx_events_date ON nightly_events(date);
 CREATE INDEX IF NOT EXISTS idx_events_type ON nightly_events(event_type);
 
@@ -136,8 +146,10 @@ CREATE TABLE IF NOT EXISTS snore_timeseries (
     PRIMARY KEY (date, timestamp)
 );
 
+CREATE SEQUENCE IF NOT EXISTS manual_logs_id_seq START 1;
 CREATE TABLE IF NOT EXISTS manual_logs (
-    id BIGINT PRIMARY KEY,
+    -- Phase 3 Item 1A: same DEFAULT nextval() discipline as nightly_events.
+    id BIGINT PRIMARY KEY DEFAULT nextval('manual_logs_id_seq'),
     date DATE NOT NULL,
     log_type VARCHAR NOT NULL,
     timestamp TIMESTAMP NOT NULL,
@@ -148,6 +160,7 @@ CREATE TABLE IF NOT EXISTS manual_logs (
     notes VARCHAR,
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE manual_logs ALTER COLUMN id SET DEFAULT nextval('manual_logs_id_seq');
 CREATE INDEX IF NOT EXISTS idx_manual_logs_date ON manual_logs(date);
 CREATE INDEX IF NOT EXISTS idx_manual_logs_type ON manual_logs(log_type);
 CREATE INDEX IF NOT EXISTS idx_manual_logs_category ON manual_logs(category);
@@ -158,8 +171,10 @@ CREATE TABLE IF NOT EXISTS config (
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE SEQUENCE IF NOT EXISTS import_log_id_seq START 1;
 CREATE TABLE IF NOT EXISTS import_log (
-    id BIGINT PRIMARY KEY,
+    -- Phase 3 Item 1A: same DEFAULT nextval() discipline.
+    id BIGINT PRIMARY KEY DEFAULT nextval('import_log_id_seq'),
     import_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     source_path VARCHAR,
     nights_imported INTEGER,
@@ -168,6 +183,7 @@ CREATE TABLE IF NOT EXISTS import_log (
     status VARCHAR,
     error_message VARCHAR
 );
+ALTER TABLE import_log ALTER COLUMN id SET DEFAULT nextval('import_log_id_seq');
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY,
@@ -175,7 +191,8 @@ CREATE TABLE IF NOT EXISTS schema_version (
     description VARCHAR
 );
 
--- Sequences for surrogate IDs (DuckDB does not auto-increment by default)
-CREATE SEQUENCE IF NOT EXISTS nightly_events_id_seq START 1;
-CREATE SEQUENCE IF NOT EXISTS manual_logs_id_seq START 1;
-CREATE SEQUENCE IF NOT EXISTS import_log_id_seq START 1;
+-- Sequences for surrogate IDs are now declared inline above each table
+-- they belong to (Phase 3 Item 1A), so that DEFAULT nextval() can
+-- reference them in the same logical block. The redundant declarations
+-- previously here are removed; CREATE SEQUENCE IF NOT EXISTS is
+-- idempotent and the inline forms above carry the canonical definition.

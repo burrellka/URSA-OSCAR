@@ -88,7 +88,8 @@ export interface ImportLogEntry {
   nights_imported: number;
   earliest_date: string | null;
   latest_date: string | null;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  // Phase 3 Item 1C — tri-state discriminator. `partial` is new in 0.5.0.
+  status: 'pending' | 'running' | 'completed' | 'partial' | 'failed';
   error_message: string | null;
   // Phase 2 polish 0.4.2 — per-night resilient import. Optional/back-compat.
   nights_skipped?: number;
