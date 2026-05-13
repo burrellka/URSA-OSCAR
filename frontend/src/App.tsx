@@ -7,6 +7,7 @@ import Events from './pages/Events';
 import ImportPage from './pages/Import';
 import Trends from './pages/Trends';
 import ManualLogs from './pages/ManualLogs';
+import Profile from './pages/Profile';
 import Settings from './pages/Settings';
 
 export default function App() {
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="import" element={<ImportPage />} />
           <Route path="trends" element={<Trends />} />
           <Route path="logs" element={<ManualLogs />} />
+          <Route path="profile" element={<Profile />} />
           <Route path="settings" element={<Settings />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

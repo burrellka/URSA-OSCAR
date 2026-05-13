@@ -1,7 +1,15 @@
 // Typed API client for URSA-OSCAR's backend.
 // Raw `fetch()` per ADR-001 (no TanStack Query) — small surface, single user.
 
-import type { ImportLogEntry, NightlyEvent, NightlySummary } from './types';
+import type {
+  ImportLogEntry,
+  ManualLogEntry,
+  ManualLogType,
+  NightlyEvent,
+  NightlySummary,
+  UserProfile,
+  VocabAddResult,
+} from './types';
 
 const BASE = '/api/v1';
 
@@ -92,6 +100,63 @@ export const api = {
   getSystemConfig: () => request<SystemConfig>(`${BASE}/system/config`),
   verifyMcp: () =>
     request<VerifyMcpResult>(`${BASE}/system/verify-mcp`, { method: 'POST' }),
+
+  // =====================================================================
+  // Phase 3 Item 3 — manual logs.
+  // =====================================================================
+  listManualLogs: (params?: {
+    start?: string;
+    end?: string;
+    log_type?: ManualLogType;
+    category?: string;
+  }) =>
+    request<ManualLogEntry[]>(`${BASE}/manual-logs`, {}, params),
+
+  createManualLog: (entry: Omit<ManualLogEntry, 'id' | 'last_updated'>) =>
+    request<ManualLogEntry>(`${BASE}/manual-logs`, {
+      method: 'POST',
+      body: JSON.stringify(entry),
+    }),
+
+  patchManualLog: (id: number, patch: Record<string, unknown>) =>
+    request<ManualLogEntry>(`${BASE}/manual-logs/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    }),
+
+  deleteManualLog: (id: number) =>
+    request<void>(`${BASE}/manual-logs/${id}`, { method: 'DELETE' }),
+
+  // =====================================================================
+  // Phase 3 Item 3 — profile.
+  // =====================================================================
+  getProfile: () => request<UserProfile>(`${BASE}/profile`),
+
+  putProfile: (profile: UserProfile) =>
+    request<UserProfile>(`${BASE}/profile`, {
+      method: 'PUT',
+      body: JSON.stringify(profile),
+    }),
+
+  patchProfile: (diff: Record<string, unknown>) =>
+    request<UserProfile>(`${BASE}/profile`, {
+      method: 'PATCH',
+      body: JSON.stringify(diff),
+    }),
+
+  // =====================================================================
+  // Phase 3 Item 3 — vocab.
+  // =====================================================================
+  getVocab: () => request<Record<string, unknown>>(`${BASE}/manual-logs/vocab`),
+
+  getVocabField: (field: string) =>
+    request<string[]>(`${BASE}/manual-logs/vocab/${field}`),
+
+  addVocabValue: (log_type: ManualLogType, field: string, value: string) =>
+    request<VocabAddResult>(`${BASE}/manual-logs/vocab`, {
+      method: 'POST',
+      body: JSON.stringify({ log_type, field, value }),
+    }),
 };
 
 export interface SystemConfig {

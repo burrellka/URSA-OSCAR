@@ -7,6 +7,7 @@ import {
   Upload,
   TrendingUp,
   ClipboardList,
+  User,
   Settings as SettingsIcon,
   type LucideIcon,
 } from 'lucide-react';
@@ -19,6 +20,8 @@ const NAV: Array<{ to: string; label: string; Icon: LucideIcon; end?: boolean }>
   { to: '/import', label: 'Import', Icon: Upload },
   { to: '/trends', label: 'Trends', Icon: TrendingUp },
   { to: '/logs', label: 'Manual Logs', Icon: ClipboardList },
+  // Phase 3 Item 4B — Profile lives between Manual Logs and Settings.
+  { to: '/profile', label: 'Profile', Icon: User },
   { to: '/settings', label: 'Settings', Icon: SettingsIcon },
 ];
 

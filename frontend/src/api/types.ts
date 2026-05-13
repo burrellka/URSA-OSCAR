@@ -95,3 +95,149 @@ export interface ImportLogEntry {
   nights_skipped?: number;
   skipped?: SkippedNight[];
 }
+
+// =====================================================================
+// Phase 3 Item 3 — manual logs + profile + vocab.
+// Mirrors the Pydantic discriminated-union in
+// backend/src/ursa_oscar/models/manual_logs.py.
+// =====================================================================
+
+export type ManualLogType =
+  | 'medication'
+  | 'symptom'
+  | 'alertness'
+  | 'sleep_environment'
+  | 'freeform';
+
+export interface ManualLogBase {
+  id: number | null;
+  date: string; // YYYY-MM-DD
+  timestamp: string; // ISO
+  notes: string | null;
+  last_updated: string | null;
+}
+
+export interface MedicationLog extends ManualLogBase {
+  log_type: 'medication';
+  name: string;
+  dose: number | null;
+  dose_unit: string | null;
+}
+
+export interface SymptomLog extends ManualLogBase {
+  log_type: 'symptom';
+  name: string;
+  severity: number | null;
+}
+
+export interface AlertnessLog extends ManualLogBase {
+  log_type: 'alertness';
+  score: number;
+}
+
+export interface SleepEnvironmentLog extends ManualLogBase {
+  log_type: 'sleep_environment';
+  temperature_c: number | null;
+  noise_level: 'quiet' | 'moderate' | 'loud' | null;
+  light_level: 'dark' | 'dim' | 'bright' | null;
+  bed_partner_present: boolean | null;
+}
+
+export interface FreeformLog extends ManualLogBase {
+  log_type: 'freeform';
+  title: string | null;
+  body: string;
+}
+
+export type ManualLogEntry =
+  | MedicationLog
+  | SymptomLog
+  | AlertnessLog
+  | SleepEnvironmentLog
+  | FreeformLog;
+
+// Mirror of backend/src/ursa_oscar/models/profile.py
+export interface DisplayPreferences {
+  display_name: string | null;
+  timezone: string;
+  date_format: 'MM/DD/YYYY' | 'DD/MM/YYYY' | 'YYYY-MM-DD';
+  pressure_unit: 'cmH2O' | 'hPa';
+  temperature_unit: 'C' | 'F';
+  theme: 'light' | 'dark' | 'auto';
+}
+
+export interface Diagnosis {
+  name: string;
+  icd10_code: string | null;
+  severity: string | null;
+  diagnosed_date: string | null;
+  notes: string | null;
+}
+
+export interface Provider {
+  name: string;
+  role: 'pcp' | 'sleep_md' | 'sleep_pa' | 'ent' | 'dental_sleep' | 'cbti' | 'cardiology' | 'sleep_lab' | 'other';
+  organization: string | null;
+  notes: string | null;
+}
+
+export interface TreatmentGoal {
+  description: string;
+  target_metric: string | null;
+  target_value: number | null;
+  active: boolean;
+}
+
+export interface ActiveMedication {
+  name: string;
+  dose: number | null;
+  dose_unit: string | null;
+  schedule: string | null;
+  route: 'oral' | 'sublingual' | 'topical' | 'injection' | 'other';
+  started_date: string | null;
+  notes: string | null;
+}
+
+export interface EquipmentItem {
+  item_type: 'cpap' | 'mask' | 'mad' | 'wearable' | 'other';
+  model: string;
+  started_date: string | null;
+  active: boolean;
+  notes: string | null;
+}
+
+export interface ClinicalContext {
+  diagnoses: Diagnosis[];
+  providers: Provider[];
+  treatment_goals: TreatmentGoal[];
+  active_medications: ActiveMedication[];
+  equipment: EquipmentItem[];
+}
+
+export type QuickLogButton =
+  | 'medication'
+  | 'symptom'
+  | 'alertness'
+  | 'sleep_environment'
+  | 'freeform';
+
+export interface UIPersonalization {
+  quick_log_buttons: QuickLogButton[];
+  symptom_watchlist: string[];
+  active_concerns: string[];
+  notes: string | null;
+}
+
+export interface UserProfile {
+  version: number;
+  last_updated: string;
+  display: DisplayPreferences;
+  clinical: ClinicalContext;
+  personalization: UIPersonalization;
+}
+
+export interface VocabAddResult {
+  field: string;
+  values: string[];
+  profile_active_medications_updated: boolean;
+}
