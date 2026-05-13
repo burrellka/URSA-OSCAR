@@ -137,9 +137,118 @@ def test_list_events_filter_by_type(api_client):
     assert len(events) == 28
 
 
-def test_manual_logs_stub_returns_501(api_client):
+def test_manual_logs_list_empty_returns_200(api_client):
+    """Phase 3 Item 3B — the stub-returns-501 era is over. GET on an
+    empty manual-logs table returns 200 + empty list, not 501."""
     r = api_client.get("/api/v1/manual-logs")
-    assert r.status_code == 501
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_manual_logs_create_medication_round_trips(api_client):
+    """Phase 3 Item 3A/3B — POST a typed medication log, GET it back."""
+    create = api_client.post(
+        "/api/v1/manual-logs",
+        json={
+            "log_type": "medication",
+            "date": "2026-05-08",
+            "timestamp": "2026-05-08T21:00:00",
+            "name": "Melatonin",
+            "dose": 3,
+            "dose_unit": "mg",
+            "notes": "30 min before bed",
+        },
+    )
+    assert create.status_code == 201, create.text
+    body = create.json()
+    assert body["log_type"] == "medication"
+    assert body["name"] == "Melatonin"
+    assert body["dose"] == 3.0
+    assert body["id"] is not None
+    assert body["last_updated"] is not None
+
+    fetched = api_client.get(f"/api/v1/manual-logs/{body['id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["name"] == "Melatonin"
+
+
+def test_manual_logs_create_alertness_score_validation(api_client):
+    """Phase 3 Item 3A — discriminated union enforces per-type constraints.
+    Alertness score is bounded [1, 10] via Pydantic; out-of-range 422s."""
+    r = api_client.post(
+        "/api/v1/manual-logs",
+        json={
+            "log_type": "alertness",
+            "date": "2026-05-08",
+            "timestamp": "2026-05-08T08:00:00",
+            "score": 15,
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_profile_initialized_on_first_start(api_client):
+    """Phase 3 Item 3D — the API container's lifespan hook initializes
+    profile.json from the packaged community default. GET should return
+    the empty profile shape."""
+    r = api_client.get("/api/v1/profile")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["version"] == 1
+    assert body["clinical"]["active_medications"] == []
+    assert body["display"]["timezone"] == "UTC"
+
+
+def test_profile_patch_deep_merge(api_client):
+    """Phase 3 Item 3D — PATCH deep-merges into the existing profile.
+    Patching display.timezone must not blow away display.date_format."""
+    r1 = api_client.patch(
+        "/api/v1/profile",
+        json={"display": {"timezone": "America/New_York"}},
+    )
+    assert r1.status_code == 200
+    body = r1.json()
+    assert body["display"]["timezone"] == "America/New_York"
+    # Preserved from the default — proof the patch didn't replace the
+    # whole display block.
+    assert body["display"]["date_format"] == "YYYY-MM-DD"
+
+
+def test_profile_to_vocab_sync(api_client):
+    """Phase 3 Item 3C — adding a medication to Profile must mirror into
+    vocab.medication_name."""
+    api_client.patch(
+        "/api/v1/profile",
+        json={
+            "clinical": {
+                "active_medications": [
+                    {"name": "Trazodone", "dose": 50, "dose_unit": "mg"},
+                ],
+            },
+        },
+    )
+    r = api_client.get("/api/v1/manual-logs/vocab/medication_name")
+    assert r.status_code == 200
+    assert "Trazodone" in r.json()
+
+
+def test_vocab_to_profile_sync(api_client):
+    """Phase 3 Item 3C — POST to vocab/medication_name must mirror into
+    profile.clinical.active_medications with a minimal entry."""
+    r = api_client.post(
+        "/api/v1/manual-logs/vocab",
+        json={
+            "log_type": "medication",
+            "field": "medication_name",
+            "value": "Doxylamine",
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["profile_active_medications_updated"] is True
+
+    profile = api_client.get("/api/v1/profile").json()
+    names = [m["name"] for m in profile["clinical"]["active_medications"]]
+    assert "Doxylamine" in names
 
 
 def test_imports_async_status_404(api_client):

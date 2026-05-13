@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "last_updated": "2026-01-01T00:00:00Z",
+  "medication_name": [],
+  "symptom_name": [
+    "headache",
+    "fatigue",
+    "dry mouth",
+    "morning grogginess",
+    "nasal congestion",
+    "sore throat",
+    "jaw soreness",
+    "skin irritation"
+  ],
+  "noise_level": ["quiet", "moderate", "loud"],
+  "light_level": ["dark", "dim", "bright"],
+  "category": []
+}
