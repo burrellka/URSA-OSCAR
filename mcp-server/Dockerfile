@@ -18,7 +18,7 @@ WORKDIR /app
 COPY mcp-server/pyproject.toml ./pyproject.toml
 COPY mcp-server/src ./src
 
-RUN pip install --upgrade pip && pip install .
+RUN pip install --upgrade pip && pip install -e .
 
 # Runtime — same /data volume as the API container; read-only access.
 ENV URSA_OSCAR_DB_PATH=/data/ursa-oscar.duckdb

@@ -34,6 +34,7 @@ from .tools import (  # noqa: E402 (import after FastMCP instantiation is requir
     pressure_profile,
     session_breakdown,
     trigger_import,
+    user_profile,           # Phase 3 Item 5E (Tier 1)
 )
 
 
