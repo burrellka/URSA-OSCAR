@@ -1,0 +1,68 @@
+version: '3.8'
+
+networks:
+  kairos-net:
+    external: true
+
+services:
+  ursa-oscar-api:
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-api:latest
+    container_name: ursa-oscar-api
+    environment:
+      URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
+      URSA_OSCAR_IMPORT_WATCH_PATH: /cpap-import
+      URSA_OSCAR_EXPORTS_PATH: /data/exports
+      # Phase-2-polish Item 5 — Settings page surface. Mirrored from MCP.
+      URSA_OSCAR_MCP_INTERNAL_URL: http://ursa-oscar-mcp:8000
+      URSA_OSCAR_MCP_BASE_URL: ${URSA_OSCAR_MCP_BASE_URL}
+      URSA_OSCAR_MCP_BEARER_TOKEN: ${URSA_OSCAR_MCP_BEARER_TOKEN}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_ID: ${URSA_OSCAR_MCP_OAUTH_CLIENT_ID}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET}
+      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-latest}
+      URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-latest}
+      URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-latest}
+      URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-latest}
+    networks:
+      - kairos-net
+    volumes:
+      - ${URSA_OSCAR_DATA_PATH}:/data
+      - ${URSA_OSCAR_CPAP_IMPORT_PATH}:/cpap-import:ro
+    restart: unless-stopped
+
+  ursa-oscar-mcp:
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-mcp:latest
+    container_name: ursa-oscar-mcp
+    environment:
+      URSA_OSCAR_API_URL: http://ursa-oscar-api:8000
+      URSA_OSCAR_MCP_BEARER_TOKEN: ${URSA_OSCAR_MCP_BEARER_TOKEN}
+      URSA_OSCAR_MCP_BASE_URL: ${URSA_OSCAR_MCP_BASE_URL}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_ID: ${URSA_OSCAR_MCP_OAUTH_CLIENT_ID}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET}
+    networks:
+      - kairos-net
+    ports:
+      - "${URSA_OSCAR_MCP_HOST_PORT:-8082}:8000"
+    restart: unless-stopped
+    depends_on:
+      - ursa-oscar-api
+
+  ursa-oscar-web:
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-web:latest
+    container_name: ursa-oscar-web
+    networks:
+      - kairos-net
+    ports:
+      - "${URSA_OSCAR_WEB_HOST_PORT:-5063}:80"
+    restart: unless-stopped
+
+  ursa-oscar-watcher:
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-watcher:latest
+    container_name: ursa-oscar-watcher
+    networks:
+      - kairos-net
+    volumes:
+      - ${URSA_OSCAR_DATA_PATH}:/data
+      - ${URSA_OSCAR_CPAP_IMPORT_PATH}:/cpap-import:ro
+    restart: unless-stopped
+    depends_on:
+      - ursa-oscar-api

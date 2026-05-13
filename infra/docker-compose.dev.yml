@@ -1,0 +1,76 @@
+version: '3.8'
+
+# Local dev stack — build from source, hot reload, LAN dev-bypass port 5065.
+# No kairos-net dependency (default bridge network is fine for single-user dev).
+
+services:
+  ursa-oscar-api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    container_name: ursa-oscar-api
+    ports:
+      # Host 5065 -> container 8000 (LAN dev-bypass, unauthenticated read-only).
+      # Per Design v1.1 Decision 13.
+      - "${URSA_OSCAR_DEV_BYPASS_HOST_PORT:-5065}:8000"
+    volumes:
+      - ../backend/src:/app/src
+      - ../data:/data
+      - ../backend/tests/regression/fixtures:/cpap-import:ro
+    environment:
+      URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
+      URSA_OSCAR_DEV_BYPASS_ENABLED: "true"
+      # Phase-2-polish Item 5 (Settings page): the API surfaces a masked
+      # view of these at GET /api/v1/system/config + uses the bearer token
+      # to drive POST /api/v1/system/verify-mcp. Values mirror the MCP
+      # container's env. Defaults match the MCP service block below so dev
+      # works out of the box with no .env required.
+      URSA_OSCAR_MCP_INTERNAL_URL: http://ursa-oscar-mcp:8000
+      URSA_OSCAR_MCP_BASE_URL: ${URSA_OSCAR_MCP_BASE_URL:-http://localhost:8082}
+      URSA_OSCAR_MCP_BEARER_TOKEN: ${URSA_OSCAR_MCP_BEARER_TOKEN:-dev-bearer-token-please-rotate}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_ID: ${URSA_OSCAR_MCP_OAUTH_CLIENT_ID:-dev-client-id}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET:-dev-client-secret}
+      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-dev}
+      URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-dev}
+      URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-dev}
+      URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-dev}
+    command: uvicorn ursa_oscar.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/src
+
+  ursa-oscar-mcp:
+    build:
+      context: ..
+      dockerfile: mcp-server/Dockerfile
+    container_name: ursa-oscar-mcp
+    ports:
+      - "${URSA_OSCAR_MCP_HOST_PORT:-8082}:8000"
+    volumes:
+      - ../mcp-server/src:/app/src
+    environment:
+      URSA_OSCAR_API_URL: http://ursa-oscar-api:8000
+      URSA_OSCAR_MCP_BEARER_TOKEN: ${URSA_OSCAR_MCP_BEARER_TOKEN:-dev-bearer-token-please-rotate}
+      URSA_OSCAR_MCP_BASE_URL: ${URSA_OSCAR_MCP_BASE_URL:-http://localhost:8082}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_ID: ${URSA_OSCAR_MCP_OAUTH_CLIENT_ID:-dev-client-id}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET:-dev-client-secret}
+    depends_on:
+      - ursa-oscar-api
+
+  ursa-oscar-web:
+    build:
+      context: ..
+      dockerfile: frontend/Dockerfile
+    container_name: ursa-oscar-web
+    ports:
+      - "${URSA_OSCAR_WEB_HOST_PORT:-5063}:80"
+    depends_on:
+      - ursa-oscar-api
+
+  ursa-oscar-watcher:
+    build:
+      context: ..
+      dockerfile: watcher/Dockerfile
+    container_name: ursa-oscar-watcher
+    volumes:
+      - ../data:/data
+      - ../backend/tests/regression/fixtures:/cpap-import:ro
+    depends_on:
+      - ursa-oscar-api

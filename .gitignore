@@ -1,0 +1,79 @@
+# Runtime data
+data/
+*.duckdb
+*.duckdb.wal
+*.duckdb-wal
+
+# Secrets / env
+.env
+.env.local
+*.env
+
+# Phase 3 — work-in-progress docs that haven't been polished for the
+# public Docs/ index. Kept locally for reference. Only finished,
+# audited documentation lands in `Docs/` proper.
+Docs/WIP/
+
+# Phase 3 — personal CPAP regression fixtures (Kevin's own SD-card EDF
+# data). Excluded from the public repo per the pre-publication scrub.
+# Re-establish anonymized fixtures in Phase 4+ if community contributors
+# need a deterministic regression target.
+backend/tests/regression/fixtures/nights/oscar-reference/
+
+# Same rationale — the parity test + canonical targets reference the
+# private fixtures above. Kept locally for the operator's regression
+# runs; excluded from the public repo until synthetic fixtures land.
+backend/tests/regression/canonical_targets.py
+backend/tests/regression/test_oscar_parity.py
+
+# Per-instance config (Phase 3) — vocabularies and user profile live
+# on the mounted volume, never in git. Repo ships *.community-default
+# stubs only.
+data/vocab.json
+data/profile.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.venv/
+venv/
+ENV/
+*.egg-info/
+build/
+dist/
+
+# Node / Vite
+node_modules/
+frontend/dist/
+frontend/build/
+.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# OS
+Thumbs.db
+
+# Regression fixtures: keep the fixture tree but ignore any local scratch
+backend/tests/regression/fixtures/_scratch/
+
+# Frontend test artifacts
+playwright-report/
+test-results/

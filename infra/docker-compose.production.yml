@@ -1,0 +1,89 @@
+version: '3.8'
+
+# Production stack for the homelab. Mirrors APEX's production-compose
+# convention: real paths + hostnames are hardcoded here; only secrets live
+# in Dockge's environment editor and are referenced via ${VAR}.
+
+networks:
+  kairos-net:
+    external: true
+
+services:
+  ursa-oscar-api:
+    image: brain40/ursa-oscar-api:latest
+    container_name: ursa-oscar-api
+    environment:
+      URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
+      URSA_OSCAR_IMPORT_WATCH_PATH: /cpap-import
+      URSA_OSCAR_EXPORTS_PATH: /data/exports
+      # Phase-2-polish Item 5 (Settings page): mirrored from the MCP
+      # container so the API can show a masked view at
+      # GET /api/v1/system/config and drive POST /api/v1/system/verify-mcp.
+      URSA_OSCAR_MCP_INTERNAL_URL: http://ursa-oscar-mcp:8000
+      URSA_OSCAR_MCP_BASE_URL: ${URSA_OSCAR_MCP_BASE_URL:-https://your-public-host.example.com}
+      URSA_OSCAR_MCP_BEARER_TOKEN: ${URSA_OSCAR_MCP_BEARER_TOKEN}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_ID: ${URSA_OSCAR_MCP_OAUTH_CLIENT_ID}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET}
+      # Image versions surfaced in the Settings page. Set via the build
+      # script (build_and_push.ps1 --Version 0.4.0 -> baked into each
+      # image's ENV URSA_OSCAR_IMAGE_VERSION) and threaded to the API via
+      # docker-compose so the Settings page can show every container's
+      # tag without needing Docker-socket access.
+      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-latest}
+      URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-latest}
+      URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-latest}
+      URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-latest}
+    networks:
+      - kairos-net
+    volumes:
+      - /srv/ursa-oscar/data:/data
+      - /srv/ursa-oscar/cpap-import:/cpap-import:ro
+    restart: unless-stopped
+
+  ursa-oscar-mcp:
+    image: brain40/ursa-oscar-mcp:latest
+    container_name: ursa-oscar-mcp
+    environment:
+      # MCP reads from the API container over kairos-net (no direct DuckDB
+      # access; DuckDB's cross-process lock model prevents that).
+      URSA_OSCAR_API_URL: http://ursa-oscar-api:8000
+      # Required: bearer token for SSE auth. Missing -> container exits with ERROR.
+      #   python -c "import secrets; print(secrets.token_urlsafe(32))"
+      URSA_OSCAR_MCP_BEARER_TOKEN: ${URSA_OSCAR_MCP_BEARER_TOKEN}
+      # Override in Dockge env editor with your real public hostname.
+      # Wrong value -> claude.ai's OAuth discovery returns wrong endpoint URLs.
+      URSA_OSCAR_MCP_BASE_URL: ${URSA_OSCAR_MCP_BASE_URL:-https://your-public-host.example.com}
+      # Required: pre-registered OAuth client (DCR disabled).
+      #   python -c "import secrets; print(secrets.token_urlsafe(16))"   # ID
+      #   python -c "import secrets; print(secrets.token_urlsafe(32))"   # SECRET
+      URSA_OSCAR_MCP_OAUTH_CLIENT_ID: ${URSA_OSCAR_MCP_OAUTH_CLIENT_ID}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET}
+    networks:
+      - kairos-net
+    ports:
+      # Host 8085 (8082 is taken on kairos-net by localrecall) -> container 8000
+      - "8085:8000"
+    restart: unless-stopped
+    depends_on:
+      - ursa-oscar-api
+
+  ursa-oscar-web:
+    image: brain40/ursa-oscar-web:latest
+    container_name: ursa-oscar-web
+    networks:
+      - kairos-net
+    ports:
+      - "5063:80"
+    restart: unless-stopped
+
+  ursa-oscar-watcher:
+    image: brain40/ursa-oscar-watcher:latest
+    container_name: ursa-oscar-watcher
+    networks:
+      - kairos-net
+    volumes:
+      - /srv/ursa-oscar/data:/data
+      - /srv/ursa-oscar/cpap-import:/cpap-import:ro
+    restart: unless-stopped
+    depends_on:
+      - ursa-oscar-api
