@@ -10,6 +10,7 @@ import sys
 import httpx
 
 
+# Override via env var or local edit for your deployment
 PUB_URL = "https://your-public-host.example.com"
 BEARER = os.environ.get("URSA_OSCAR_MCP_BEARER_TOKEN", "")
 

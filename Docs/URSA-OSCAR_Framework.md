@@ -179,7 +179,7 @@ CREATE TABLE manual_logs (
     date TEXT,                                  -- the night this entry is associated with
     log_type TEXT,                              -- 'medication', 'symptom', 'mood', 'alertness', 'note'
     timestamp TEXT,                             -- when the event/observation occurred
-    value_text TEXT,                            -- e.g., "doxepin 3mg", "alert 8/10"
+    value_text TEXT,                            -- e.g., "melatonin 3mg", "alert 8/10"
     value_numeric REAL,                         -- normalized numeric value when applicable
     unit TEXT,                                  -- "mg", "score", etc.
     category TEXT,                              -- 'sleep_aid', 'wakefulness_agent', 'energy', etc.
@@ -216,7 +216,7 @@ The manual_logs table is intentionally flexible. Example entries:
   "date": "2026-05-10",
   "log_type": "medication",
   "timestamp": "2026-05-10T22:00:00",
-  "value_text": "doxepin 3mg",
+  "value_text": "melatonin 3mg",
   "value_numeric": 3,
   "unit": "mg",
   "category": "sleep_aid"
@@ -707,8 +707,8 @@ URSA agent (Claude) connects to URSA-OSCAR MCP server alongside fitbitkb MCP. Ex
 "Show me the central apnea trend over the last 2 weeks."
 → get_trend(metric='central_ahi', start_date=-14, end_date=today)
 
-"Was my AHI better on doxepin nights or non-doxepin nights?"
-→ get_manual_log_summary(filter='doxepin') joined with get_nightly_summary on those dates
+"Was my AHI better on melatonin nights or non-melatonin nights?"
+→ get_manual_log_summary(filter='melatonin') joined with get_nightly_summary on those dates
 
 "Did my readiness score improve after I started CPAP?"
 → correlate_with_external(cpap_metric='ahi', external_metric='readiness', external_source='fitbit')
