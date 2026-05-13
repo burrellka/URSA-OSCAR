@@ -186,6 +186,7 @@ export interface TreatmentGoal {
   target_metric: string | null;
   target_value: number | null;
   active: boolean;
+  notes: string | null;
 }
 
 export interface ActiveMedication {

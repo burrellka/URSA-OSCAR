@@ -139,6 +139,11 @@ class TreatmentGoal(BaseModel):
         default=True,
         description="False = retired goal (kept for history but not surfaced as a current target).",
     )
+    notes: str | None = Field(
+        default=None,
+        description="Free-text context — why the goal exists, what's been tried, etc. "
+                    "Visible to the URSA agent for clinical-reasoning context.",
+    )
 
 
 class ActiveMedication(BaseModel):

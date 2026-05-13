@@ -52,6 +52,12 @@ const TIMEZONES = (() => {
 
 export default function Profile() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  // Phase 3 polish #1: if profile.display.timezone is the community-default
+  // 'UTC' AND the browser detects a different IANA TZ, pre-fill the
+  // detected TZ into the Display form. We keep `profile.display.timezone`
+  // unchanged so the form's dirty check fires and the user is prompted
+  // (via the Save button + a one-shot toast) to confirm the change.
+  const [detectedTimezone, setDetectedTimezone] = useState<string | null>(null);
   const [tab, setTab] = useState<TabId>('display');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +66,23 @@ export default function Profile() {
   useEffect(() => {
     (async () => {
       try {
-        setProfile(await api.getProfile());
+        const p = await api.getProfile();
+        setProfile(p);
+
+        // Auto-detect browser timezone — fires only when the profile is
+        // still on the 'UTC' community default and the browser knows a
+        // more useful value. No auto-save; just pre-fill + toast.
+        const browserTz = (() => {
+          try {
+            return Intl.DateTimeFormat().resolvedOptions().timeZone;
+          } catch {
+            return null;
+          }
+        })();
+        if (p.display.timezone === 'UTC' && browserTz && browserTz !== 'UTC') {
+          setDetectedTimezone(browserTz);
+          showToast(`Detected timezone: ${browserTz} — save to confirm.`);
+        }
       } catch (e) {
         setError(e instanceof ApiError ? e.message : String(e));
       } finally {
@@ -71,7 +93,7 @@ export default function Profile() {
 
   function showToast(msg: string) {
     setToast(msg);
-    setTimeout(() => setToast(null), 3500);
+    setTimeout(() => setToast(null), 5000);
   }
 
   async function saveTab(section: TabId, payload: object) {
@@ -107,7 +129,12 @@ export default function Profile() {
 
           {tab === 'display' && (
             <DisplayTab
-              initial={profile.display}
+              initial={
+                detectedTimezone
+                  ? { ...profile.display, timezone: detectedTimezone }
+                  : profile.display
+              }
+              dirtyBaseline={profile.display}
               onSave={(p) => saveTab('display', p)}
             />
           )}
@@ -179,12 +206,17 @@ function TabButton({ id, current, onClick, children }: {
 
 // --- Display tab ----------------------------------------------------------
 
-function DisplayTab({ initial, onSave }: {
+function DisplayTab({ initial, dirtyBaseline, onSave }: {
   initial: DisplayPreferences;
+  /** What to compare current state against for the dirty check. Defaults
+   *  to `initial`. Profile component passes the un-prefilled saved
+   *  profile so the auto-detected-timezone scenario can show as dirty
+   *  even though the form's starting state has the detected value. */
+  dirtyBaseline?: DisplayPreferences;
   onSave: (p: DisplayPreferences) => void | Promise<void>;
 }) {
   const [s, setS] = useState<DisplayPreferences>(initial);
-  const dirty = JSON.stringify(s) !== JSON.stringify(initial);
+  const dirty = JSON.stringify(s) !== JSON.stringify(dirtyBaseline ?? initial);
 
   return (
     <div className="chart-card" style={{ maxWidth: '40rem' }}>
@@ -227,9 +259,38 @@ function DisplayTab({ initial, onSave }: {
         onChange={(v) => setS({ ...s, theme: v as DisplayPreferences['theme'] })}
       />
 
-      <button type="button" className="btn-primary" disabled={!dirty} onClick={() => onSave(s)}>
-        Save display settings
+      <SaveButton dirty={dirty} label="Save display settings" onClick={() => onSave(s)} />
+    </div>
+  );
+}
+
+
+/**
+ * Phase 3 polish #2 — save buttons now flip class between btn-primary
+ * (dirty: vibrant accent color, full-strength) and btn-secondary (clean:
+ * muted gray, clearly off). The CSS `:disabled` opacity rule alone made
+ * dirty + clean states look too similar — both pale-blue at a glance.
+ * This component makes the difference unambiguous AND surfaces a "no
+ * changes" hint inline so users know why the button isn't doing anything.
+ */
+function SaveButton({ dirty, label, onClick }: {
+  dirty: boolean; label: string; onClick: () => void;
+}) {
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.625rem' }}>
+      <button
+        type="button"
+        className={dirty ? 'btn-primary' : 'btn-secondary'}
+        disabled={!dirty}
+        onClick={onClick}
+      >
+        {label}
       </button>
+      {!dirty && (
+        <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+          No changes to save
+        </span>
+      )}
     </div>
   );
 }
@@ -304,9 +365,7 @@ function ClinicalTab({ initial, onSave }: {
         />
       </ClinicalSubcard>
 
-      <button type="button" className="btn-primary" disabled={!dirty} onClick={() => onSave(c)}>
-        Save clinical context
-      </button>
+      <SaveButton dirty={dirty} label="Save clinical context" onClick={() => onSave(c)} />
     </div>
   );
 }
@@ -393,13 +452,13 @@ function GoalsTable({ rows, onAdd, onDelete }: {
   onAdd: (g: TreatmentGoal) => void;
   onDelete: (i: number) => void;
 }) {
-  const [draft, setDraft] = useState<TreatmentGoal>({ description: '', target_metric: null, target_value: null, active: true });
+  const [draft, setDraft] = useState<TreatmentGoal>({ description: '', target_metric: null, target_value: null, active: true, notes: null });
   return (
     <>
       <RowsTable
         empty="No treatment goals set."
-        headers={['Description', 'Target metric', 'Target value', 'Active']}
-        rows={rows.map((g) => [g.description, g.target_metric ?? '—', g.target_value ?? '—', g.active ? '✓' : '—'])}
+        headers={['Description', 'Target metric', 'Target value', 'Active', 'Notes']}
+        rows={rows.map((g) => [g.description, g.target_metric ?? '—', g.target_value ?? '—', g.active ? '✓' : '—', g.notes ?? ''])}
         onDelete={onDelete}
       />
       <AddRowGrid>
@@ -410,9 +469,10 @@ function GoalsTable({ rows, onAdd, onDelete }: {
           <input type="checkbox" checked={draft.active} onChange={(e) => setDraft({ ...draft, active: e.target.checked })} />
           Active
         </label>
+        <input placeholder="Notes" value={draft.notes ?? ''} onChange={(e) => setDraft({ ...draft, notes: e.target.value || null })} />
         <button type="button" className="btn-secondary" disabled={!draft.description.trim()} onClick={() => {
           onAdd(draft);
-          setDraft({ description: '', target_metric: null, target_value: null, active: true });
+          setDraft({ description: '', target_metric: null, target_value: null, active: true, notes: null });
         }}>Add</button>
       </AddRowGrid>
     </>
@@ -431,13 +491,14 @@ function MedicationsTable({ rows, onAdd, onDelete }: {
     <>
       <RowsTable
         empty="No active medications."
-        headers={['Name', 'Dose', 'Schedule', 'Route', 'Started']}
+        headers={['Name', 'Dose', 'Schedule', 'Route', 'Started', 'Notes']}
         rows={rows.map((m) => [
           m.name,
           m.dose !== null ? `${m.dose}${m.dose_unit ? ' ' + m.dose_unit : ''}` : '—',
           m.schedule ?? '—',
           m.route,
           m.started_date ?? '—',
+          m.notes ?? '',
         ])}
         onDelete={onDelete}
       />
@@ -454,6 +515,7 @@ function MedicationsTable({ rows, onAdd, onDelete }: {
           <option value="other">Other</option>
         </select>
         <input type="date" value={draft.started_date ?? ''} onChange={(e) => setDraft({ ...draft, started_date: e.target.value || null })} />
+        <input placeholder="Notes" value={draft.notes ?? ''} onChange={(e) => setDraft({ ...draft, notes: e.target.value || null })} />
         <button type="button" className="btn-secondary" disabled={!draft.name.trim()} onClick={() => {
           onAdd(draft);
           setDraft({ name: '', dose: null, dose_unit: null, schedule: null, route: 'oral', started_date: null, notes: null });
@@ -614,9 +676,7 @@ function PersonalizationTab({ initial, onSave }: {
         />
       </div>
 
-      <button type="button" className="btn-primary" disabled={!dirty} onClick={() => onSave(p)}>
-        Save personalization
-      </button>
+      <SaveButton dirty={dirty} label="Save personalization" onClick={() => onSave(p)} />
     </div>
   );
 }
