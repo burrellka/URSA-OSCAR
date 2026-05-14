@@ -94,6 +94,10 @@ export interface ImportLogEntry {
   // Phase 2 polish 0.4.2 — per-night resilient import. Optional/back-compat.
   nights_skipped?: number;
   skipped?: SkippedNight[];
+  // 0.6.3 — skip-existing dedup. Counts nights that were already in the
+  // DB and weren't re-parsed. Distinct from `nights_skipped` (which is
+  // for errors / empty-sessions). Optional/back-compat.
+  nights_skipped_existing?: number;
 }
 
 // =====================================================================

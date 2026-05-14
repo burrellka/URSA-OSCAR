@@ -78,6 +78,17 @@ def get_by_date(db: DuckDBManager, target: date_t) -> Optional[NightlySummary]:
     return NightlySummary.model_validate(dict(zip(_FIELDS, row)))
 
 
+def date_exists(db: DuckDBManager, target: date_t) -> bool:
+    """Lightweight existence probe — used by the importer's skip-existing
+    path to avoid re-parsing nights that are already in the DB. Skips the
+    ~30-column materialization that ``get_by_date`` would do."""
+    row = db.execute(
+        "SELECT 1 FROM nightly_summary WHERE date = ? LIMIT 1",
+        (target,),
+    ).fetchone()
+    return row is not None
+
+
 def list_dates(
     db: DuckDBManager,
     start: date_t | None = None,

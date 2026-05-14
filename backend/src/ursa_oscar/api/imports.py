@@ -75,12 +75,29 @@ class ImportRequest(BaseModel):
 
 
 @router.post("/imports", response_model=ImportLogEntry)
-def trigger_import(req: ImportRequest, request: Request) -> ImportLogEntry:
+def trigger_import(
+    req: ImportRequest,
+    request: Request,
+    force: bool = False,
+) -> ImportLogEntry:
+    """Trigger a path-based import.
+
+    Query params:
+      force: if true, re-parse nights even when a `nightly_summary` row
+             already exists for that date. Defaults to false — the
+             importer skips already-known nights for speed, which is
+             the dominant path when the operator re-plugs the same SD
+             card after a few new nights have accumulated.
+    """
     db = request.app.state.db
     src = Path(req.source_path)
     if not src.exists():
         raise HTTPException(status_code=400, detail=f"Source path does not exist: {src}")
-    return import_path(src, db, include_timeseries=req.include_timeseries)
+    return import_path(
+        src, db,
+        include_timeseries=req.include_timeseries,
+        skip_existing=not force,
+    )
 
 
 @router.get("/imports/{job_id}", response_model=ImportLogEntry)
@@ -104,6 +121,7 @@ def get_import_status(job_id: int, request: Request) -> ImportLogEntry:
 async def upload_folder_and_import(
     request: Request,
     files: list[UploadFile] = File(...),
+    force: bool = False,
 ) -> ImportLogEntry:
     """Phase 3 Item 2 — browser-side folder-upload import.
 
@@ -224,8 +242,14 @@ async def upload_folder_and_import(
         )
 
         # Run the existing importer. include_timeseries=True matches the
-        # source-path path's default.
-        return import_path(import_root, db, include_timeseries=True)
+        # source-path path's default. skip_existing=not force is the
+        # 0.6.3 dedup path — re-uploads of the same SD card skip
+        # already-known nights for a fast re-import.
+        return import_path(
+            import_root, db,
+            include_timeseries=True,
+            skip_existing=not force,
+        )
     finally:
         # Always clean up — even on import failure, the EDFs are now
         # transient state.

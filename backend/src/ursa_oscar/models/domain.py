@@ -136,6 +136,12 @@ class ImportLogEntry(BaseModel):
     # UI ergonomics. Default empty/0 for back-compat with v1 callers.
     nights_skipped: int = 0
     skipped: list[SkippedNight] = []
+    # 0.6.3 — skip-existing import path. Counts nights already in
+    # nightly_summary that we declined to re-parse. Separate from
+    # ``nights_skipped`` (which is errors / empty-sessions) so the UI can
+    # distinguish "30 nights already known" from "30 nights broken".
+    # Defaults to 0 so older clients keep their shape.
+    nights_skipped_existing: int = 0
 
 
 class ManualLog(BaseModel):

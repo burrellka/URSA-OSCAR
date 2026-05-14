@@ -8,6 +8,11 @@ export default function ImportPage() {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ImportLogEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 0.6.3 — force re-parse toggle. Default OFF so re-uploading the same
+  // SD card is cheap (importer skips known nights). User opts in only
+  // when they actually want to re-process — typically after an importer
+  // bug fix that changed how a metric is calculated.
+  const [forceReimport, setForceReimport] = useState(false);
 
   // Phase 3 Item 2 — folder upload UI state.
   const [uploadProgress, setUploadProgress] = useState<{ sent: number; total: number } | null>(null);
@@ -18,7 +23,7 @@ export default function ImportPage() {
     setError(null);
     setResult(null);
     try {
-      const r = await api.triggerImport(path);
+      const r = await api.triggerImport(path, forceReimport);
       setResult(r);
     } catch (e) {
       if (e instanceof ApiError) {
@@ -42,6 +47,7 @@ export default function ImportPage() {
       const r = await api.uploadFolder(
         Array.from(files),
         (sent, total) => setUploadProgress({ sent, total }),
+        forceReimport,
       );
       setResult(r);
     } catch (e2) {
@@ -83,6 +89,30 @@ export default function ImportPage() {
         <button className="btn-primary" onClick={go} disabled={running}>
           {running ? 'Importing…' : 'Start import'}
         </button>
+
+        {/* 0.6.3 — Force re-import toggle. Applies to both the path-based
+            import above and the folder-upload below. Default off, since
+            most re-imports are "I plugged the card back in, ingest the
+            new nights" and re-parsing the already-known ones is just
+            wasted time. */}
+        <div style={{ marginTop: '0.75rem' }}>
+          <label
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8125rem', cursor: running ? 'not-allowed' : 'pointer', color: 'var(--text-secondary)' }}
+          >
+            <input
+              type="checkbox"
+              checked={forceReimport}
+              onChange={(e) => setForceReimport(e.target.checked)}
+              disabled={running}
+            />
+            Force re-parse nights already in the database
+          </label>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginLeft: '1.25rem', marginTop: '0.125rem' }}>
+            Leave unchecked for a fast incremental import. Check to re-process
+            known nights (after an importer change or to refresh a
+            specific date range).
+          </div>
+        </div>
 
         {/* Phase 3 Item 2 — folder upload alternative. */}
         <div style={{ marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)' }}>
@@ -169,6 +199,9 @@ export default function ImportPage() {
               {result.status}
             </span>
             <strong>{result.nights_imported}</strong> night{result.nights_imported === 1 ? '' : 's'} imported
+            {(result.nights_skipped_existing ?? 0) > 0 && (
+              <> · <span style={{ color: 'var(--text-secondary)' }}>{result.nights_skipped_existing} already known</span></>
+            )}
             {(result.nights_skipped ?? 0) > 0 && (
               <> · <strong style={{ color: 'var(--ahi-warn, #d97706)' }}>{result.nights_skipped} skipped</strong></>
             )}

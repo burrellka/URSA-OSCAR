@@ -104,6 +104,7 @@ def import_path(
     db: DuckDBManager,
     *,
     include_timeseries: bool = True,
+    skip_existing: bool = True,
     verbose: bool = False,
 ) -> ImportLogEntry:
     """Import every night dir found under `source_path` into DuckDB.
@@ -118,6 +119,13 @@ def import_path(
     Empty nights (no sessions, or all sessions filtered as empty) also land
     in `skipped` with a benign reason, so the UI shows the full inventory of
     what was and wasn't imported.
+
+    **skip_existing** (default True, 0.6.3): if a `nightly_summary` row
+    already exists for a night's date, skip parsing it entirely. Counts
+    land on `nights_skipped_existing`. Pass `skip_existing=False` to force
+    a full re-parse (used by the `force=true` upload query param). This
+    cuts a 66-night re-import from minutes to seconds on the happy path
+    where the operator just plugged the same SD card in again.
 
     Returns a populated ImportLogEntry. The caller is responsible for
     persisting it (the importer doesn't write to import_log itself so it
@@ -152,11 +160,21 @@ def import_path(
         equipment_settings = None
 
     nights_imported = 0
+    nights_skipped_existing = 0
     earliest: NightlySummary | None = None
     latest: NightlySummary | None = None
     skipped: list[SkippedNight] = []
 
     for night_date, datalog_dir in night_dirs:
+        # 0.6.3 — skip nights already in the DB unless the caller
+        # explicitly asked for a force re-parse. This is the dominant
+        # path when an operator re-uploads the same SD card after
+        # adding a few new nights.
+        if skip_existing and nights_repo.date_exists(db, night_date):
+            nights_skipped_existing += 1
+            if verbose:
+                print(f"  {night_date}: already in DB — skipped (use force=true to overwrite)")
+            continue
         try:
             sessions_raw = discover_sessions(datalog_dir)
             aggregates: list[SessionAggregate] = []
@@ -257,6 +275,17 @@ def import_path(
         status = "completed"
         error_message = None
 
+    # If every discovered night was already known and we ran in
+    # skip_existing mode, that's a fully clean re-import. Report it as
+    # "completed" with all the dedup detail on nights_skipped_existing.
+    if (
+        nights_imported == 0
+        and not skipped
+        and nights_skipped_existing > 0
+    ):
+        status = "completed"
+        error_message = None
+
     return ImportLogEntry(
         source_path=str(source_path),
         nights_imported=nights_imported,
@@ -266,6 +295,7 @@ def import_path(
         error_message=error_message,
         nights_skipped=len(skipped),
         skipped=skipped,
+        nights_skipped_existing=nights_skipped_existing,
     )
 
 
@@ -286,6 +316,11 @@ def _cli() -> int:
         action="store_true",
         help="Also write the high-resolution time-series tables (slow, large).",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-parse nights already in the DB. Default skips them for speed.",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
@@ -298,6 +333,7 @@ def _cli() -> int:
     log_entry = import_path(
         args.source, db,
         include_timeseries=args.include_timeseries,
+        skip_existing=not args.force,
         verbose=args.verbose,
     )
     elapsed = time.monotonic() - started

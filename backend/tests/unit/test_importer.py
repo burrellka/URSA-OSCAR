@@ -77,8 +77,11 @@ def test_reimport_is_idempotent(tmp_path):
     db = DuckDBManager(db_file, read_only=False)
     apply_migrations(db)
 
-    import_path(FIXTURE_ROOT, db)
-    import_path(FIXTURE_ROOT, db)
+    # First run: skip_existing=False so all canonical nights actually import,
+    # even though the default is True. Otherwise this test would be ambiguous
+    # (was the second run a noop because of dedup, or because of skip?).
+    import_path(FIXTURE_ROOT, db, skip_existing=False)
+    import_path(FIXTURE_ROOT, db, skip_existing=False)
 
     nights = nights_repo.list_dates(db)
     # Generalized for a growing fixture set — re-import must not multiply
@@ -88,5 +91,52 @@ def test_reimport_is_idempotent(tmp_path):
     assert canonical.issubset(set(nights))
     counts_58 = events_repo.count_for_date(db, date(2026, 5, 8))
     assert counts_58.get("ClearAirway", 0) == 47  # not 94
+
+    db.close()
+
+
+def test_reimport_with_skip_existing_skips_known_nights(tmp_path):
+    """0.6.3 dedup — when skip_existing=True (the default), the second run
+    must NOT touch nights that are already in the DB. We verify two things:
+      1. nights_skipped_existing equals the canonical 4 (every fixture
+         night was already known on the second run).
+      2. nights_imported on the second run is 0.
+
+    Performance follows by construction — if we don't re-parse, we don't
+    re-do the per-night EDF + session-aggregate + summary-builder work.
+    """
+    db_file = tmp_path / "test.duckdb"
+    db = DuckDBManager(db_file, read_only=False)
+    apply_migrations(db)
+
+    # Force a clean first import.
+    first = import_path(FIXTURE_ROOT, db, skip_existing=False)
+    assert first.nights_imported >= 4
+    assert first.nights_skipped_existing == 0
+
+    # Second run is the new default — skip_existing=True. Every canonical
+    # night must show up under nights_skipped_existing.
+    second = import_path(FIXTURE_ROOT, db)  # uses default skip_existing=True
+    assert second.nights_imported == 0
+    assert second.nights_skipped_existing >= 4
+    assert second.status == "completed"
+
+    db.close()
+
+
+def test_force_reimport_overrides_skip_existing(tmp_path):
+    """skip_existing=False (the wire shape of ?force=true) must re-parse
+    every night even when the DB already has rows for them. This is the
+    escape hatch for after-an-importer-fix re-runs."""
+    db_file = tmp_path / "test.duckdb"
+    db = DuckDBManager(db_file, read_only=False)
+    apply_migrations(db)
+
+    first = import_path(FIXTURE_ROOT, db, skip_existing=False)
+    nights_first = first.nights_imported
+
+    forced = import_path(FIXTURE_ROOT, db, skip_existing=False)
+    assert forced.nights_imported == nights_first
+    assert forced.nights_skipped_existing == 0
 
     db.close()

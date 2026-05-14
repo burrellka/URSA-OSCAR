@@ -90,11 +90,12 @@ export const api = {
     return { date: resp.date, series: out };
   },
 
-  triggerImport: (source_path: string) =>
-    request<ImportLogEntry>(`${BASE}/imports`, {
-      method: 'POST',
-      body: JSON.stringify({ source_path }),
-    }),
+  triggerImport: (source_path: string, force = false) =>
+    request<ImportLogEntry>(
+      `${BASE}/imports`,
+      { method: 'POST', body: JSON.stringify({ source_path }) },
+      { force: force ? 'true' : undefined },
+    ),
 
   /** Settings page (Phase 2 polish Item 5). Server-side masking guaranteed. */
   getSystemConfig: () => request<SystemConfig>(`${BASE}/system/config`),
@@ -220,7 +221,11 @@ export const api = {
   // =====================================================================
   // Phase 3 Item 2 — folder upload, Item 7 — bulk export.
   // =====================================================================
-  uploadFolder: async (files: File[], onProgress?: (sent: number, total: number) => void) => {
+  uploadFolder: async (
+    files: File[],
+    onProgress?: (sent: number, total: number) => void,
+    force = false,
+  ) => {
     const fd = new FormData();
     let total = 0;
     for (const f of files) {
@@ -233,7 +238,10 @@ export const api = {
     }
     return new Promise<ImportLogEntry>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', `${BASE}/imports/upload`);
+      const url = force
+        ? `${BASE}/imports/upload?force=true`
+        : `${BASE}/imports/upload`;
+      xhr.open('POST', url);
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable && onProgress) onProgress(e.loaded, total);
       };

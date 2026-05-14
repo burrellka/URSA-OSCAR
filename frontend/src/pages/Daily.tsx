@@ -783,12 +783,19 @@ function SessionInformationCard({
           {sessions.map(({ sid, start, end }) => (
             <tr key={sid}>
               <td>
+                {/* Display-only — session-exclusion is a Phase 4 feature.
+                    The previous render used a normal checkbox which looked
+                    interactive and surprised users when clicking did
+                    nothing. We render a disabled checkbox with a tooltip
+                    so the read-only state reads clearly. */}
                 <input
                   type="checkbox"
                   checked
-                  // Phase 2: display-only. Phase 3 manual logging makes it writeable.
+                  disabled
                   readOnly
-                  aria-label={`Session ${sid} included`}
+                  title="Session exclusion is a Phase 4 feature — currently all sessions count toward this night's stats."
+                  style={{ cursor: 'not-allowed', opacity: 0.6 }}
+                  aria-label={`Session ${sid} included (read-only)`}
                 />
               </td>
               <td>{formatShortDate(start)}</td>
