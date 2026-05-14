@@ -56,8 +56,27 @@ services:
     restart: unless-stopped
 
   ursa-oscar-watcher:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-watcher:latest
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-watcher:${URSA_OSCAR_WATCHER_IMAGE_VERSION:-latest}
     container_name: ursa-oscar-watcher
+    environment:
+      # Phase 4 Ticket 3 — async watcher loop. Polls the bind-mounted
+      # CPAP source for new data, waits for filesystem quiescence, then
+      # enqueues an async import via the API's /imports endpoint.
+      URSA_OSCAR_API_URL: http://ursa-oscar-api:8000
+      URSA_OSCAR_WATCH_PATH: /cpap-import
+      # How often to scan the watch path (seconds). Default 30s.
+      URSA_OSCAR_POLL_INTERVAL: ${URSA_OSCAR_WATCH_POLL_INTERVAL:-30}
+      # How long the tree must be stable before triggering an import.
+      # Protects against firing while a copy is still in progress.
+      URSA_OSCAR_QUIESCENCE_SECONDS: ${URSA_OSCAR_WATCH_QUIESCENCE_SECONDS:-30}
+      # Optional — webhook fires on each successful import. Wire it to
+      # ntfy / Slack / Home Assistant / etc. Empty disables.
+      URSA_OSCAR_IMPORT_WEBHOOK_URL: ${URSA_OSCAR_IMPORT_WEBHOOK_URL:-}
+      # When true, every triggered import passes ?force=true so the API
+      # re-parses every night. Default false — relies on skip_existing
+      # to make the watcher's auto-triggers cheap. Set true only if
+      # you're debugging the importer itself.
+      URSA_OSCAR_FORCE_REIMPORT: ${URSA_OSCAR_WATCH_FORCE_REIMPORT:-false}
     networks:
       - kairos-net
     volumes:
