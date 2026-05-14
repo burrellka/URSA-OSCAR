@@ -31,6 +31,12 @@ interface Props {
   /** Track label rendered inline at top-left (e.g. "Pressure"). When multiple
    *  series are present the live-value readouts appear next to this label. */
   title?: string;
+  /** Explicit X-axis bounds (epoch seconds). Pin all stacked charts to the
+   *  same window so cursor sync receivers don't re-evaluate scales when the
+   *  cursor crosses charts with slightly different timestamp arrays — that
+   *  recompute is what was wiping uPlot's axis labels on hover (0.7.1 bug). */
+  xMin?: number;
+  xMax?: number;
 }
 
 /**
@@ -54,6 +60,8 @@ export default function TimeSeriesChart({
   onCreate,
   syncKey,
   title,
+  xMin,
+  xMax,
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const uplotRef = useRef<uPlot | null>(null);
@@ -74,21 +82,33 @@ export default function TimeSeriesChart({
       width: containerRef.current.clientWidth,
       height,
       cursor: {
-        // 0.7.1 legend fix — `setSeries: true` told uPlot to broadcast
-        // the focused series-index along with the cursor sync. Daily View's
-        // Pressure chart has 2 series (Pressure + EPAP) while every other
-        // track has 1 — so a sync from Pressure asking "focus series 2"
-        // landed on charts that don't have a series 2, and uPlot's
-        // out-of-bounds setSeries call wiped the static legend
-        // rendering on the receiving charts (didn't come back without a
-        // page refresh). Dropping setSeries keeps cursor-position sync
-        // (the crosshair still moves across all charts in lockstep)
-        // without broadcasting the focused-series-index.
+        // 0.7.2 axis-label fix — the Pressure chart (2 series:
+        // Pressure + EPAP) syncing to single-series charts via uPlot's
+        // cursor.sync caused the receiving charts' axis labels to
+        // vanish until page refresh. Two root causes, addressed
+        // together so the fix is durable:
+        //   1) `setSeries: true` broadcast a focused-series-index
+        //      that didn't exist on receiver charts.
+        //   2) Each chart auto-scaled its own X from its own
+        //      timestamp array, so the cursor.sync receiver
+        //      re-evaluated its X scale on every cursor move —
+        //      that recompute is what wiped axis labels.
+        //   3) `focus.prox` enabled proximity-based series focus
+        //      dimming — another vector that touches series state
+        //      on hover. Disabling it eliminates any path where
+        //      hover changes the receiver's series-render state.
         sync: syncKey ? { key: syncKey } : undefined,
-        focus: { prox: 30 },
       },
       scales: {
-        x: { time: true },
+        // Pin x to explicit min/max when provided so every chart in a
+        // sync group shares the same X scale exactly. Without this,
+        // each chart auto-fits to its own data (slightly different
+        // per series), and cursor sync between mismatched scales
+        // triggers the axis-relayout bug above.
+        x: {
+          time: true,
+          ...(xMin != null && xMax != null ? { range: [xMin, xMax] as [number, number] } : {}),
+        },
       },
       axes: [
         {
@@ -167,7 +187,7 @@ export default function TimeSeriesChart({
       uplotRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timestamps, series, height, syncKey]);
+  }, [timestamps, series, height, syncKey, xMin, xMax]);
 
   return (
     <div

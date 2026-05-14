@@ -530,6 +530,11 @@ function Charts({
                 unit={unit}
                 syncKey={syncKey}
                 height={CHART_HEIGHTS[series]}
+                // 0.7.2 — pin every chart to the night's bounds so
+                // cursor.sync receivers don't re-evaluate scales on hover.
+                // That re-evaluation was wiping uPlot's axis labels.
+                xMin={xMin}
+                xMax={xMax}
               />
             );
           })}
