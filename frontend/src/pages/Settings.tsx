@@ -159,6 +159,16 @@ export default function Settings() {
         )}
       </div>
 
+      {/* --- Data Management link ------------------------------------------ */}
+      <div className="chart-card" style={{ marginBottom: '1rem' }}>
+        <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem' }}>Data Management</h2>
+        <p style={{ marginBottom: '0.75rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+          Purge nightly summaries, events, and waveform data by date range. Run a DuckDB CHECKPOINT to
+          persist pending writes. <strong>Hard delete only — no archive or restore.</strong>
+        </p>
+        <a href="/data-management" className="btn-secondary">Open Data Management →</a>
+      </div>
+
       {/* --- Secrets Management notes -------------------------------------- */}
       <div className="chart-card" style={{ marginBottom: '1rem' }}>
         <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem' }}>Secrets Management</h2>

@@ -9,6 +9,7 @@ import Trends from './pages/Trends';
 import ManualLogs from './pages/ManualLogs';
 import Profile from './pages/Profile';
 import Settings from './pages/Settings';
+import DataManagement from './pages/DataManagement';
 
 export default function App() {
   return (
@@ -25,6 +26,7 @@ export default function App() {
           <Route path="logs" element={<ManualLogs />} />
           <Route path="profile" element={<Profile />} />
           <Route path="settings" element={<Settings />} />
+          <Route path="data-management" element={<DataManagement />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

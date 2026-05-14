@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { Trash2, AlertTriangle } from 'lucide-react';
 import { api, ApiError } from '../api/client';
+import type { PreviewDeleteResult } from '../api/client';
 import type { NightlyEvent, NightlySummary } from '../api/types';
 import { formatAhi, formatMinutesAsHM } from '../lib/format';
 import TimeSeriesChart from '../components/TimeSeriesChart';
@@ -73,17 +75,37 @@ export default function Daily() {
   const prev = idx > 0 ? allDates[idx - 1] : null;
   const next = idx >= 0 && idx < allDates.length - 1 ? allDates[idx + 1] : null;
 
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+
   return (
     <div>
       <div className="page-header">
         <h1 className="page-title">Daily View</h1>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
           <button className="btn-secondary" onClick={() => prev && navigate(`/daily/${prev}`)} disabled={!prev}>
             ◀ {prev ?? '—'}
           </button>
           <button className="btn-secondary" onClick={() => next && navigate(`/daily/${next}`)} disabled={!next}>
             {next ?? '—'} ▶
           </button>
+          {summary && (
+            <button
+              type="button"
+              onClick={() => setShowDeleteModal(true)}
+              title="Delete data for this night"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '0.375rem',
+                padding: '0.5rem 0.75rem', borderRadius: '6px',
+                background: 'transparent',
+                border: '1px solid var(--ahi-bad, #dc2626)',
+                color: 'var(--ahi-bad, #dc2626)',
+                cursor: 'pointer', fontSize: '0.8125rem',
+              }}
+            >
+              <Trash2 size={14} />
+              Delete this night
+            </button>
+          )}
         </div>
       </div>
 
@@ -106,6 +128,170 @@ export default function Daily() {
           <BottomSection s={summary} events={events} waveforms={waveforms} />
         </>
       )}
+
+      {showDeleteModal && summary && (
+        <DeleteNightModal
+          date={summary.date}
+          onClose={() => setShowDeleteModal(false)}
+          onDeleted={() => {
+            setShowDeleteModal(false);
+            // After delete, navigate to the next available date (or
+            // Overview if nothing's left).
+            const target = prev || next;
+            navigate(target ? `/daily/${target}` : '/');
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Delete-night modal (Phase 3 close-out sprint).
+// Type-to-confirm flow: user types the date YYYY-MM-DD to enable the
+// destructive button. Preview counts loaded from the API on open so the
+// user sees exactly what's about to be permanently removed.
+// ---------------------------------------------------------------------------
+
+function DeleteNightModal({
+  date, onClose, onDeleted,
+}: {
+  date: string;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const [preview, setPreview] = useState<PreviewDeleteResult | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(true);
+  const [deleteManualLogs, setDeleteManualLogs] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.previewDelete(date, date)
+      .then(setPreview)
+      .catch((e: ApiError) => setError(e.message))
+      .finally(() => setLoadingPreview(false));
+  }, [date]);
+
+  const confirmMatches = confirmText.trim() === date;
+
+  async function handleDelete() {
+    setDeleting(true);
+    setError(null);
+    try {
+      await api.deleteNight(date, deleteManualLogs);
+      onDeleted();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+        zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'white', borderRadius: '8px', padding: '1.5rem',
+          width: 'min(34rem, 92vw)', boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+        }}
+      >
+        <h2 style={{ fontSize: '1.125rem', fontWeight: 600, marginTop: 0, marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <AlertTriangle size={18} color="var(--ahi-bad, #dc2626)" />
+          Delete data for {date}?
+        </h2>
+
+        {error && <div className="error-banner" style={{ marginBottom: '0.5rem' }}>{error}</div>}
+
+        {loadingPreview ? (
+          <div className="loading">Counting what would be removed…</div>
+        ) : preview ? (
+          <>
+            <div
+              style={{
+                padding: '0.75rem', background: 'var(--bg-secondary)',
+                borderRadius: '6px', fontSize: '0.875rem', marginBottom: '0.75rem',
+              }}
+            >
+              <p style={{ margin: 0, marginBottom: '0.5rem' }}>
+                Will permanently remove:
+              </p>
+              <ul style={{ margin: 0, paddingLeft: '1.25rem' }}>
+                <li>{preview.events} respiratory events</li>
+                <li>{preview.timeseries_rows.toLocaleString()} waveform sample rows (~{Math.round(preview.timeseries_rows / 12500)} MB)</li>
+                <li>1 nightly summary entry</li>
+                <li>
+                  {preview.manual_logs} manual log{preview.manual_logs === 1 ? '' : 's'}{' '}
+                  <span style={{ color: 'var(--text-muted)' }}>
+                    ({deleteManualLogs ? 'will be deleted' : 'kept by default'})
+                  </span>
+                </li>
+              </ul>
+              <p style={{ margin: 0, marginTop: '0.5rem', color: 'var(--text-muted)', fontSize: '0.8125rem' }}>
+                Reimportable from the original SD-card export. <strong>This action cannot be undone.</strong>
+              </p>
+            </div>
+
+            <label style={{ display: 'inline-flex', alignItems: 'flex-start', gap: '0.5rem', marginBottom: '0.75rem', fontSize: '0.875rem' }}>
+              <input
+                type="checkbox"
+                checked={deleteManualLogs}
+                onChange={(e) => setDeleteManualLogs(e.target.checked)}
+                style={{ marginTop: '0.1875rem' }}
+              />
+              <span>
+                Also delete manual log entries for this date
+                <br />
+                <span style={{ color: 'var(--text-muted)', fontSize: '0.8125rem' }}>
+                  Recommended: leave unchecked.
+                </span>
+              </span>
+            </label>
+
+            <div className="field" style={{ marginBottom: '0.75rem' }}>
+              <label>Type <code>{date}</code> to enable the delete button</label>
+              <input
+                type="text"
+                value={confirmText}
+                onChange={(e) => setConfirmText(e.target.value)}
+                placeholder={date}
+                style={{ fontFamily: 'monospace' }}
+                autoFocus
+              />
+            </div>
+          </>
+        ) : null}
+
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+          <button type="button" className="btn-secondary" onClick={onClose} disabled={deleting}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={!confirmMatches || deleting}
+            onClick={handleDelete}
+            style={{
+              padding: '0.5rem 1rem', borderRadius: '6px',
+              background: confirmMatches ? 'var(--ahi-bad, #dc2626)' : '#9ca3af',
+              border: 'none', color: 'white',
+              cursor: confirmMatches && !deleting ? 'pointer' : 'not-allowed',
+              fontSize: '0.875rem', fontWeight: 500,
+              opacity: confirmMatches && !deleting ? 1 : 0.6,
+            }}
+          >
+            {deleting ? 'Deleting…' : 'Delete permanently'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
