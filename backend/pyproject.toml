@@ -17,6 +17,11 @@ dependencies = [
     "mne>=1.7",
     "numpy>=1.26",
     "pandas>=2.0",
+    # Phase 3 Items 5A-5D — analytical endpoints. scipy.stats provides
+    # pearsonr (returns r + p-value in one call) for /analytics/correlation
+    # and linregress (slope + r² + p-value + stderr) for /analytics/trend.
+    # numpy + pandas already handle the aggregation paths.
+    "scipy>=1.14",
     "watchdog>=4.0",
     "python-multipart>=0.0.27",
     # Phase-2-polish Item 5: /api/v1/system/verify-mcp hits the MCP container

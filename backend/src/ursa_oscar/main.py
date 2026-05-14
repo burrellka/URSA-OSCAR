@@ -12,7 +12,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api import (
-    events, exports, health, imports, manual_logs, nights, profile, system, timeseries, vocab,
+    analytics, events, exports, health, imports, manual_logs, nights, profile,
+    system, timeseries, vocab,
 )
 from .config import get_settings
 from .storage import profile_store, vocab_store
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(exports.router)
     app.include_router(system.router)
     app.include_router(profile.router)
+    app.include_router(analytics.router)
 
     return app
 
