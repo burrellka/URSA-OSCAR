@@ -7,6 +7,8 @@ import type {
   ManualLogType,
   NightlyEvent,
   NightlySummary,
+  Session,
+  ToggleSessionResponse,
   UserProfile,
   VocabAddResult,
 } from './types';
@@ -67,6 +69,16 @@ export const api = {
 
   getNight: (date: string) =>
     request<NightlySummary>(`${BASE}/night/${date}`),
+
+  // Phase 4 Ticket 1 — session-level data + exclusion toggle.
+  listSessions: (date: string) =>
+    request<Session[]>(`${BASE}/nights/${date}/sessions`),
+
+  toggleSession: (date: string, session_id: number) =>
+    request<ToggleSessionResponse>(
+      `${BASE}/nights/${date}/sessions/${session_id}/toggle`,
+      { method: 'POST' },
+    ),
 
   listEvents: (date: string, eventTypes?: string[]) =>
     request<NightlyEvent[]>(`${BASE}/events`, {}, { date, event_type: eventTypes }),

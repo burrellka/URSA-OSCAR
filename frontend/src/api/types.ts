@@ -100,6 +100,26 @@ export interface ImportLogEntry {
   nights_skipped_existing?: number;
 }
 
+
+// Phase 4 Ticket 1 — sessions table + exclusion. The Daily View binds
+// the Session Information checkbox column to these.
+
+export interface Session {
+  date: string;
+  session_id: number;
+  start_ts: string;
+  end_ts: string;
+  mask_on_minutes: number;
+  excluded: boolean;
+}
+
+export interface ToggleSessionResponse {
+  date: string;
+  session_id: number;
+  excluded: boolean;
+  summary: NightlySummary;
+}
+
 // =====================================================================
 // Phase 3 Item 3 — manual logs + profile + vocab.
 // Mirrors the Pydantic discriminated-union in

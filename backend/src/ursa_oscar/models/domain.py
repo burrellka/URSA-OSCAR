@@ -95,6 +95,34 @@ class NightlyEvent(BaseModel):
     leak_at_event: float | None = None
 
 
+class Session(BaseModel):
+    """One row of the `sessions` table.
+
+    The canonical per-session record written by the importer alongside
+    nightly_summary. Phase 4 Ticket 1 — the join key for
+    recompute_summary() when an operator excludes a session from the
+    night's stats. Session IDs are 1-based ordinals within a night,
+    renumbered after empty-session filtering by the importer, so the
+    (date, session_id) pair is stable across re-imports as long as
+    the same sessions remain non-empty.
+    """
+    date: date_t
+    session_id: int
+    start_ts: datetime
+    end_ts: datetime
+    mask_on_minutes: float
+    excluded: bool = False  # populated on read; not stored on this row
+
+
+class ExcludedSession(BaseModel):
+    """One row of the `excluded_sessions` table. Insert = exclude;
+    delete = re-include. Recorded with a timestamp for forensic
+    purposes (and to keep DuckDB's PK + auto-defaulted column shape)."""
+    date: date_t
+    session_id: int
+    excluded_at: datetime | None = None
+
+
 class TimeseriesPoint(BaseModel):
     """One row of any *_timeseries table.
 

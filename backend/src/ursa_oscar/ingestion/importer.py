@@ -30,6 +30,7 @@ from typing import Iterator
 import numpy as np
 
 from ..analytics.edf_parser import WaveformSignal, discover_sessions
+from ..analytics.recompute_summary import recompute_for_date
 from ..analytics.session_analyzer import SessionAggregate, analyze_session
 from ..analytics.settings_parser import parse_equipment_settings
 from ..analytics.summary_builder import build_summary
@@ -39,8 +40,22 @@ from ..storage.db import DuckDBManager
 from ..storage.migrations import apply_migrations
 from ..storage.repositories import events as events_repo
 from ..storage.repositories import nights as nights_repo
+from ..storage.repositories import sessions as sessions_repo
 from ..storage.repositories import timeseries as timeseries_repo
 from .airsense11_layout import list_night_dirs
+
+
+def _has_exclusions(db: DuckDBManager, night_date) -> bool:
+    """Lightweight probe — does this night have any excluded_sessions
+    rows? Used by the importer to decide whether to call the
+    recompute path after a fresh write. Skipping the recompute on
+    the common no-exclusions case keeps re-imports fast."""
+    with db.serialized() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM excluded_sessions WHERE date = ? LIMIT 1",
+            (night_date,),
+        ).fetchone()
+    return row is not None
 
 
 # Map our public series name -> (PLD signal label, whether to scale L/s -> L/min)
@@ -204,10 +219,42 @@ def import_path(
             )
 
             # Dedup-on-date: re-import overwrites prior data for this night.
+            # Sessions get wiped + rewritten the same way; excluded_sessions
+            # is left intact so operator exclusions persist across
+            # re-imports (architect decision — orphan rows acceptable).
             nights_repo.delete_for_date(db, night_date)
             events_repo.delete_for_date(db, night_date)
+            sessions_repo.delete_for_date(db, night_date)
             nights_repo.upsert(db, summary)
             events_repo.bulk_insert(db, all_events)
+
+            # Phase 4 Ticket 1 — write the per-session canonical record
+            # alongside summary + events. mask_on_minutes comes straight
+            # off the SessionAggregate (duration of the longest non-empty
+            # EDF for the session). recompute_summary() will join against
+            # this table to redo the night math when an exclusion toggles.
+            for sess in non_empty:
+                sessions_repo.upsert_session(
+                    db,
+                    date=night_date,
+                    session_id=sess.session_id,
+                    start_ts=sess.start,
+                    end_ts=sess.end,
+                    mask_on_minutes=sess.duration_minutes,
+                )
+
+            # Phase 4 Ticket 1 — preserve exclusions across re-imports.
+            # The importer just wrote the "all sessions included" summary
+            # straight from EDF math; if the operator had previously
+            # excluded any of this night's sessions, we need to recompute
+            # back to their preferred view. The recompute reads sessions
+            # + excluded_sessions + nightly_events + timeseries from the
+            # DB (no EDF re-parse needed). Cheap when there are no
+            # exclusions — recompute is still called but produces a
+            # numerically-identical summary and only bumps last_updated.
+            # We skip that cheap-but-pointless call to keep imports fast.
+            if _has_exclusions(db, night_date):
+                recompute_for_date(db, night_date)
 
             # Time-series — clear and rewrite per night.
             if include_timeseries:

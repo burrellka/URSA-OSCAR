@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Trash2, AlertTriangle } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { PreviewDeleteResult } from '../api/client';
-import type { NightlyEvent, NightlySummary } from '../api/types';
+import type { NightlyEvent, NightlySummary, Session } from '../api/types';
 import { formatAhi, formatMinutesAsHM } from '../lib/format';
 import TimeSeriesChart from '../components/TimeSeriesChart';
 import EventRug from '../components/EventRug';
@@ -19,6 +19,32 @@ const TRACK_SERIES = [
 ] as const;
 type TrackSeries = typeof TRACK_SERIES[number];
 
+// Phase 4 Ticket 1.5 — per-series chart heights. Diagnostically
+// important channels (Pressure, Leak) get the most pixels; secondary
+// channels (Snore, Resp Rate, Minute Vent) get just enough to read
+// trends. EventRug header stays compact — it's a tappability bump
+// from 36 to 40 rather than a visual-real-estate change.
+const CHART_HEIGHTS: Record<TrackSeries, number> = {
+  pressure:     180,
+  leak:         180,
+  tidal_volume: 140,
+  flow_limit:   120,
+  minute_vent:  120,
+  resp_rate:    120,
+  snore:        120,
+};
+const EVENT_RUG_HEIGHT = 40;
+
+// Series hidden when the "Compact view" toggle is on — keeps the
+// expensive-to-read secondary tracks out of the way for night-to-night
+// scanning. Pressure / Leak (with EPAP) stay visible since they're the
+// "is the device behaving" channels.
+const COMPACT_HIDDEN: ReadonlySet<TrackSeries> = new Set([
+  'flow_limit', 'tidal_volume', 'minute_vent', 'resp_rate', 'snore',
+]);
+
+const COMPACT_STORAGE_KEY = 'ursa_oscar_daily_compact';
+
 type SeriesPayload = Record<string, { timestamps: number[]; values: (number | null)[]; secondary: (number | null)[] | null }>;
 
 export default function Daily() {
@@ -26,6 +52,11 @@ export default function Daily() {
   const navigate = useNavigate();
   const [summary, setSummary] = useState<NightlySummary | null>(null);
   const [events, setEvents] = useState<NightlyEvent[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  // Phase 4 Ticket 1 — true while a session-toggle POST is in flight.
+  // The summary block dims + shows "Recomputing…" so the operator knows
+  // the numbers below are about to update.
+  const [recomputing, setRecomputing] = useState(false);
   const [waveforms, setWaveforms] = useState<SeriesPayload>({});
   const [allDates, setAllDates] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,13 +76,19 @@ export default function Daily() {
         const target = date || dates[dates.length - 1];
         if (!target) { setSummary(null); return; }
         if (!date && target) { navigate(`/daily/${target}`, { replace: true }); return; }
-        const [n, ev] = await Promise.all([
+        const [n, ev, ss] = await Promise.all([
           api.getNight(target),
           api.listEvents(target),
+          // Sessions endpoint may 404-equivalently return [] for nights
+          // with no session rows yet — catch and fall through to the
+          // empty-array path. We never want a missing /sessions to take
+          // down the whole Daily View.
+          api.listSessions(target).catch(() => [] as Session[]),
         ]);
         if (cancelled) return;
         setSummary(n);
         setEvents(ev);
+        setSessions(ss);
       })
       .catch((e: ApiError) => { if (!cancelled) setError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -77,6 +114,42 @@ export default function Daily() {
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
+  // Phase 4 Ticket 1.5 — Compact view toggle. Persists in localStorage
+  // so the operator's preference survives page reloads. Default is
+  // expanded (compact = false) per architect spec.
+  const [compact, setCompact] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(COMPACT_STORAGE_KEY) === '1';
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(COMPACT_STORAGE_KEY, compact ? '1' : '0');
+  }, [compact]);
+
+  // Phase 4 Ticket 1 — flip a session's exclusion state. The backend
+  // recomputes nightly_summary in one transaction and returns it; we
+  // splice it into local state + replace the session row so the table
+  // reflects the new state without a separate refetch.
+  async function handleToggleSession(session_id: number) {
+    if (!summary?.date) return;
+    setRecomputing(true);
+    try {
+      const resp = await api.toggleSession(summary.date, session_id);
+      setSummary(resp.summary);
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.session_id === session_id ? { ...s, excluded: resp.excluded } : s,
+        ),
+      );
+    } catch (e) {
+      // Recompute / toggle failures are loud — surface as the page
+      // error banner. Session table stays at its pre-click state.
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setRecomputing(false);
+    }
+  }
+
   return (
     <div>
       <div className="page-header">
@@ -87,6 +160,21 @@ export default function Daily() {
           </button>
           <button className="btn-secondary" onClick={() => next && navigate(`/daily/${next}`)} disabled={!next}>
             {next ?? '—'} ▶
+          </button>
+          {/* Phase 4 Ticket 1.5 — Compact view toggle. Hides the secondary
+              waveform tracks (Flow Limit, Tidal Vol, Minute Vent, Resp Rate,
+              Snore) so the operator can night-scan focused on Pressure +
+              Leak. Preference persists in localStorage. */}
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setCompact((c) => !c)}
+            title={compact
+              ? "Show all waveform tracks"
+              : "Hide secondary tracks (Flow Limit, Tidal Vol, Minute Vent, Resp Rate, Snore)"}
+            style={{ fontSize: '0.8125rem' }}
+          >
+            {compact ? 'Expanded view' : 'Compact view'}
           </button>
           {summary && (
             <button
@@ -118,14 +206,39 @@ export default function Daily() {
 
       {summary && (
         <>
-          <SummaryTiles s={summary} />
+          {recomputing && (
+            <div
+              style={{
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: '6px',
+                padding: '0.4rem 0.75rem',
+                marginBottom: '0.75rem',
+                fontSize: '0.8125rem',
+                color: 'var(--text-secondary)',
+              }}
+            >
+              Recomputing night statistics…
+            </div>
+          )}
+          <div style={{ opacity: recomputing ? 0.55 : 1, transition: 'opacity 120ms' }}>
+            <SummaryTiles s={summary} />
+          </div>
           <Charts
             summary={summary}
             events={events}
             waveforms={waveforms}
             wfLoading={wfLoading}
+            compact={compact}
           />
-          <BottomSection s={summary} events={events} waveforms={waveforms} />
+          <BottomSection
+            s={summary}
+            events={events}
+            waveforms={waveforms}
+            sessions={sessions}
+            onToggleSession={handleToggleSession}
+            recomputing={recomputing}
+          />
         </>
       )}
 
@@ -308,12 +421,13 @@ function SummaryTiles({ s }: { s: NightlySummary }) {
 }
 
 function Charts({
-  summary, events, waveforms, wfLoading,
+  summary, events, waveforms, wfLoading, compact,
 }: {
   summary: NightlySummary;
   events: NightlyEvent[];
   waveforms: SeriesPayload;
   wfLoading: boolean;
+  compact: boolean;
 }) {
   const syncKey = `daily-${summary.date}`;
 
@@ -387,33 +501,38 @@ function Charts({
       </div>
 
       <div style={{ display: 'grid', gap: '0.375rem' }}>
-        <EventRug events={events} syncKey={syncKey} xMin={xMin} xMax={xMax} height={36} />
-        {tracks.map(({ series, label, unit, stroke, secondary, fill, valueScale }) => {
-          const w = waveforms[series];
-          if (!w || w.timestamps.length === 0) return null;
-          const scaled = valueScale && valueScale !== 1
-            ? w.values.map((v) => (v == null ? null : v * valueScale))
-            : w.values;
-          const seriesList: Array<{ label: string; values: (number | null)[]; stroke?: string; fill?: boolean }> = [
-            { label, values: scaled, stroke, fill },
-          ];
-          if (secondary && w.secondary && w.secondary.length === w.values.length) {
-            const scaledSecondary = valueScale && valueScale !== 1
-              ? w.secondary.map((v) => (v == null ? null : v * valueScale))
-              : w.secondary;
-            seriesList.push({ label: secondary.label, values: scaledSecondary, stroke: secondary.stroke });
-          }
-          return (
-            <TimeSeriesChart
-              key={series}
-              timestamps={w.timestamps}
-              series={seriesList}
-              unit={unit}
-              syncKey={syncKey}
-              height={130}
-            />
-          );
-        })}
+        <EventRug events={events} syncKey={syncKey} xMin={xMin} xMax={xMax} height={EVENT_RUG_HEIGHT} />
+        {tracks
+          // Ticket 1.5 — hide the secondary tracks when compact view is on.
+          // Pressure / Leak / EPAP stay visible since they're the diagnostic
+          // "is the device behaving" channels.
+          .filter(({ series }) => !compact || !COMPACT_HIDDEN.has(series))
+          .map(({ series, label, unit, stroke, secondary, fill, valueScale }) => {
+            const w = waveforms[series];
+            if (!w || w.timestamps.length === 0) return null;
+            const scaled = valueScale && valueScale !== 1
+              ? w.values.map((v) => (v == null ? null : v * valueScale))
+              : w.values;
+            const seriesList: Array<{ label: string; values: (number | null)[]; stroke?: string; fill?: boolean }> = [
+              { label, values: scaled, stroke, fill },
+            ];
+            if (secondary && w.secondary && w.secondary.length === w.values.length) {
+              const scaledSecondary = valueScale && valueScale !== 1
+                ? w.secondary.map((v) => (v == null ? null : v * valueScale))
+                : w.secondary;
+              seriesList.push({ label: secondary.label, values: scaledSecondary, stroke: secondary.stroke });
+            }
+            return (
+              <TimeSeriesChart
+                key={series}
+                timestamps={w.timestamps}
+                series={seriesList}
+                unit={unit}
+                syncKey={syncKey}
+                height={CHART_HEIGHTS[series]}
+              />
+            );
+          })}
       </div>
     </div>
   );
@@ -429,11 +548,14 @@ function Charts({
  * Phase 2 polish, work order Item 2.
  */
 function BottomSection({
-  s, events, waveforms,
+  s, events, waveforms, sessions, onToggleSession, recomputing,
 }: {
   s: NightlySummary;
   events: NightlyEvent[];
   waveforms: SeriesPayload;
+  sessions: Session[];
+  onToggleSession: (session_id: number) => void;
+  recomputing: boolean;
 }) {
   return (
     <>
@@ -445,7 +567,13 @@ function BottomSection({
         <ExtendedStatisticsCard s={s} waveforms={waveforms} />
       </div>
       <div>
-        <SessionInformationCard s={s} events={events} />
+        <SessionInformationCard
+          s={s}
+          events={events}
+          sessions={sessions}
+          onToggleSession={onToggleSession}
+          recomputing={recomputing}
+        />
       </div>
     </>
   );
@@ -702,22 +830,49 @@ function ExtendedStatisticsCard({
 
 /**
  * Card C — Session Information. One row per CPAP session for the night
- * with checkbox / date / start / end / duration columns, plus a
- * ResMed session-id caption per row (work order Item 2).
+ * with an interactive ON checkbox, plus date / start / end / duration
+ * columns and a ResMed session-id caption.
  *
- * Session bounds are derived from nightly_events: for each distinct
- * session_id, we take min/max of the event timestamps. Falls back to
- * summary.start_time / end_time when a session has zero events (rare on
- * real-world apnea-prone data; defensive).
+ * Phase 4 Ticket 1 — the ON checkbox is now wired:
+ *   - Sessions come from the new GET /api/v1/nights/{date}/sessions
+ *     endpoint with authoritative timing (from the importer's
+ *     SessionAggregate) and the operator's exclusion state.
+ *   - Clicking the checkbox flips the exclusion and triggers a
+ *     server-side recompute of nightly_summary. The parent component
+ *     replaces its summary state from the toggle response.
+ *   - Excluded rows render strikethrough + muted so the operator
+ *     sees at a glance which sessions are being counted.
  *
- * The "On" checkbox is display-only in Phase 2 (always checked). Phase 3
- * makes it writeable when manual logging lands.
+ * Falls back to legacy event-derived rendering ONLY when no sessions
+ * came back from the API — covers the case of a database that was
+ * imported pre-0.7.0 and never re-imported, where the v4 migration
+ * couldn't backfill (no events). The checkbox is read-only in that
+ * legacy path because we don't have a session row to toggle against.
  */
 function SessionInformationCard({
-  s, events,
-}: { s: NightlySummary; events: NightlyEvent[] }) {
-  const sessions = useMemo(() => {
-    // session_id -> { start, end } derived from event timestamps.
+  s, events, sessions, onToggleSession, recomputing,
+}: {
+  s: NightlySummary;
+  events: NightlyEvent[];
+  sessions: Session[];
+  onToggleSession: (session_id: number) => void;
+  recomputing: boolean;
+}) {
+  // If the API returned sessions, use them as the authoritative source.
+  // The event-derived fallback handles the rare pre-0.7.0 edge case.
+  const rows = useMemo(() => {
+    if (sessions.length > 0) {
+      return sessions.map((sess) => ({
+        sid: sess.session_id,
+        start: sess.start_ts,
+        end: sess.end_ts,
+        excluded: sess.excluded,
+        mask_on_minutes: sess.mask_on_minutes,
+        fromApi: true,
+      }));
+    }
+    // Legacy event-derived path — checkbox is read-only here because
+    // there's no session row in the DB to toggle.
     const m = new Map<number, { start: string; end: string }>();
     for (const ev of events) {
       if (ev.session_id == null) continue;
@@ -731,27 +886,22 @@ function SessionInformationCard({
     }
     const out = Array.from(m.entries())
       .sort((a, b) => a[0] - b[0])
-      .map(([sid, { start, end }]) => ({ sid, start, end }));
-
-    // Single-session night: replace event-min/max with summary.start_time /
-    // end_time. Events bound the *first* and *last* respiratory event, NOT
-    // the actual mask-on window — for a single session those are the same
-    // human-meaningful boundaries. Multi-session nights still rely on
-    // event-derived bounds until the API exposes per-session start/end
-    // explicitly (Phase 3 work).
+      .map(([sid, { start, end }]) => ({
+        sid, start, end, excluded: false, mask_on_minutes: 0, fromApi: false,
+      }));
     if (out.length === 1 && s.start_time && s.end_time) {
-      out[0] = { sid: out[0].sid, start: s.start_time, end: s.end_time };
+      out[0] = { ...out[0], start: s.start_time, end: s.end_time };
     }
-
-    // Defensive fallback for nights where events came back empty but
-    // summary.session_count >= 1.
     if (out.length === 0 && (s.session_count ?? 0) > 0 && s.start_time && s.end_time) {
-      out.push({ sid: 1, start: s.start_time, end: s.end_time });
+      out.push({
+        sid: 1, start: s.start_time, end: s.end_time,
+        excluded: false, mask_on_minutes: 0, fromApi: false,
+      });
     }
     return out;
-  }, [events, s]);
+  }, [sessions, events, s]);
 
-  if (sessions.length === 0) {
+  if (rows.length === 0) {
     return (
       <div className="chart-card">
         <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem' }}>Session Information</h2>
@@ -760,12 +910,17 @@ function SessionInformationCard({
     );
   }
 
+  const excludedCount = rows.filter((r) => r.excluded).length;
+
   return (
     <div className="chart-card">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '0.5rem' }}>
         <h2 style={{ fontSize: '1rem', fontWeight: 600 }}>Session Information</h2>
         <span style={{ color: 'var(--text-muted)', fontSize: '0.8125rem' }}>
-          {sessions.length} session{sessions.length === 1 ? '' : 's'}
+          {rows.length} session{rows.length === 1 ? '' : 's'}
+          {excludedCount > 0 && (
+            <> · <span style={{ color: 'var(--ahi-warn, #d97706)' }}>{excludedCount} excluded</span></>
+          )}
         </span>
       </div>
       <table className="data-table">
@@ -780,31 +935,38 @@ function SessionInformationCard({
           </tr>
         </thead>
         <tbody>
-          {sessions.map(({ sid, start, end }) => (
-            <tr key={sid}>
-              <td>
-                {/* Display-only — session-exclusion is a Phase 4 feature.
-                    The previous render used a normal checkbox which looked
-                    interactive and surprised users when clicking did
-                    nothing. We render a disabled checkbox with a tooltip
-                    so the read-only state reads clearly. */}
-                <input
-                  type="checkbox"
-                  checked
-                  disabled
-                  readOnly
-                  title="Session exclusion is a Phase 4 feature — currently all sessions count toward this night's stats."
-                  style={{ cursor: 'not-allowed', opacity: 0.6 }}
-                  aria-label={`Session ${sid} included (read-only)`}
-                />
-              </td>
-              <td>{formatShortDate(start)}</td>
-              <td style={{ fontVariantNumeric: 'tabular-nums' }}>{formatTime(start)}</td>
-              <td style={{ fontVariantNumeric: 'tabular-nums' }}>{formatTime(end)}</td>
-              <td style={{ fontVariantNumeric: 'tabular-nums' }}>{formatDuration(start, end)}</td>
-              <td style={{ color: 'var(--text-muted)' }}>ResMed Session #{sid}</td>
-            </tr>
-          ))}
+          {rows.map(({ sid, start, end, excluded, fromApi }) => {
+            const muted = excluded ? { color: 'var(--text-muted)', textDecoration: 'line-through' } : {};
+            return (
+              <tr key={sid}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={!excluded}
+                    disabled={!fromApi || recomputing}
+                    onChange={() => fromApi && onToggleSession(sid)}
+                    title={
+                      !fromApi
+                        ? "Re-import this night to enable session exclusion."
+                        : excluded
+                          ? "Click to include in night statistics."
+                          : "Click to exclude from night statistics."
+                    }
+                    style={{
+                      cursor: fromApi && !recomputing ? 'pointer' : 'not-allowed',
+                      opacity: fromApi ? 1 : 0.5,
+                    }}
+                    aria-label={`Session ${sid} ${excluded ? 'excluded' : 'included'}`}
+                  />
+                </td>
+                <td style={muted}>{formatShortDate(start)}</td>
+                <td style={{ fontVariantNumeric: 'tabular-nums', ...muted }}>{formatTime(start)}</td>
+                <td style={{ fontVariantNumeric: 'tabular-nums', ...muted }}>{formatTime(end)}</td>
+                <td style={{ fontVariantNumeric: 'tabular-nums', ...muted }}>{formatDuration(start, end)}</td>
+                <td style={{ color: 'var(--text-muted)', ...muted }}>ResMed Session #{sid}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

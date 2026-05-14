@@ -11,13 +11,14 @@ from importlib.resources import files
 from .db import DuckDBManager
 
 
-SCHEMA_VERSION = 3  # v3 (2026-05-13): id columns now DEFAULT nextval(); sequence-resync migration
+SCHEMA_VERSION = 4  # v4 (2026-05-14): sessions + excluded_sessions; backfill from nightly_events
 
 
 _VERSION_DESCRIPTIONS = {
     1: "Initial DDL",
     2: "Device-Settings expansion (+9 columns on nightly_summary)",
     3: "id columns DEFAULT nextval(); resync sequences with MAX(id)+1 of existing rows",
+    4: "Phase 4 Ticket 1: sessions + excluded_sessions tables; backfill sessions from nightly_events",
 }
 
 
@@ -81,6 +82,36 @@ def apply_migrations(db: DuckDBManager) -> int:
             conn.execute(
                 f"ALTER TABLE {table} ALTER COLUMN id SET DEFAULT nextval('{seq}')"
             )
+
+        # v4 post-DDL fixup: backfill `sessions` rows for any night already
+        # in the DB but missing from the new table. This makes the
+        # session-exclusion feature work against 0.6.x databases that
+        # never saw the importer's session-row writes. We derive timing
+        # from nightly_events' (date, session_id, MIN/MAX(timestamp))
+        # — an underestimate of true mask-on (events don't span the
+        # full session), but good enough until a future re-import
+        # refreshes the row with EDF-derived numbers.
+        #
+        # Idempotent: insert only where (date, session_id) doesn't
+        # already exist. On a fresh DB this runs as a no-op (no rows
+        # in nightly_events yet either).
+        conn.execute("""
+            INSERT INTO sessions (date, session_id, start_ts, end_ts, mask_on_minutes)
+            SELECT
+                e.date,
+                e.session_id,
+                MIN(e.timestamp) AS start_ts,
+                MAX(e.timestamp) AS end_ts,
+                EXTRACT(EPOCH FROM (MAX(e.timestamp) - MIN(e.timestamp))) / 60.0
+                    AS mask_on_minutes
+            FROM nightly_events e
+            WHERE NOT EXISTS (
+                SELECT 1 FROM sessions s
+                 WHERE s.date = e.date AND s.session_id = e.session_id
+            )
+              AND e.session_id IS NOT NULL
+            GROUP BY e.date, e.session_id
+        """)
 
         # Record version if not present at SCHEMA_VERSION.
         current = conn.execute(

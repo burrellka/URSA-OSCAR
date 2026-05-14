@@ -191,6 +191,37 @@ CREATE TABLE IF NOT EXISTS schema_version (
     description VARCHAR
 );
 
+-- Phase 4 Ticket 1 (v4, 2026-05-14) — session-level data + exclusion.
+--
+-- `sessions` is the canonical per-session record (one row per non-empty
+-- session per night), written by the importer alongside nightly_summary.
+-- It's the join key for recompute_summary() when excluding sessions
+-- from a night's stats. Backfill on first 0.7.0 deploy derives rows
+-- from nightly_events' (date, session_id) groupings + min/max of
+-- their event timestamps (an underestimate of true mask-on, but good
+-- enough until the next re-import refreshes it from EDF).
+CREATE TABLE IF NOT EXISTS sessions (
+    date DATE NOT NULL,
+    session_id INTEGER NOT NULL,
+    start_ts TIMESTAMP NOT NULL,
+    end_ts TIMESTAMP NOT NULL,
+    mask_on_minutes DOUBLE NOT NULL,
+    PRIMARY KEY (date, session_id)
+);
+
+-- `excluded_sessions` is the operator-facing "don't count this session
+-- in the night's stats" list. Inserts and deletes are both used —
+-- toggle = insert if absent, delete if present. recompute_summary
+-- consumes this list. Persists across re-imports; orphan rows (where
+-- a previously-non-empty session becomes empty after re-import) are
+-- accepted as a low-frequency edge case until Phase 4.5 housekeeping.
+CREATE TABLE IF NOT EXISTS excluded_sessions (
+    date DATE NOT NULL,
+    session_id INTEGER NOT NULL,
+    excluded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (date, session_id)
+);
+
 -- Sequences for surrogate IDs are now declared inline above each table
 -- they belong to (Phase 3 Item 1A), so that DEFAULT nextval() can
 -- reference them in the same logical block. The redundant declarations

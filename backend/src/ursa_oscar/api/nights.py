@@ -8,8 +8,10 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from pydantic import BaseModel
 
-from ..models.domain import NightlySummary
+from ..analytics.recompute_summary import recompute_for_date
+from ..models.domain import NightlySummary, Session
 from ..storage.repositories import nights as nights_repo
+from ..storage.repositories import sessions as sessions_repo
 
 router = APIRouter(prefix="/api/v1", tags=["nights"])
 
@@ -63,6 +65,93 @@ def get_night(target_date: date_t, request: Request) -> NightlySummary:
     if night is None:
         raise HTTPException(status_code=404, detail=f"No data for night {target_date}")
     return night
+
+
+# =====================================================================
+# Phase 4 Ticket 1 — session-level data + the operator-facing
+# exclusion toggle. Lists sessions for a night (with their
+# inclusion/exclusion state), and lets the operator flip a session's
+# state. Flipping triggers a full recompute of nightly_summary.
+# =====================================================================
+
+
+class ToggleSessionResponse(BaseModel):
+    """Response shape for POST /nights/{date}/sessions/{id}/toggle."""
+    date: date_t
+    session_id: int
+    excluded: bool                 # the NEW state after the flip
+    summary: NightlySummary        # the recomputed nightly_summary row
+
+
+@router.get("/nights/{target_date}/sessions", response_model=list[Session])
+def list_sessions_for_night(
+    target_date: date_t, request: Request,
+) -> list[Session]:
+    """Per-session inventory for a night, with each row's exclusion
+    state populated via LEFT JOIN excluded_sessions. Empty list when
+    no sessions exist (pre-0.7.0 nights that haven't been re-imported
+    will have backfill-derived rows from the v4 migration; only nights
+    never imported at all return [])."""
+    db = request.app.state.db
+    return sessions_repo.list_for_date(db, target_date)
+
+
+@router.post(
+    "/nights/{target_date}/sessions/{session_id}/toggle",
+    response_model=ToggleSessionResponse,
+)
+def toggle_session(
+    target_date: date_t,
+    session_id: int,
+    request: Request,
+) -> ToggleSessionResponse:
+    """Flip a session's exclusion state and recompute the night's stats.
+
+    Behavior:
+      - If (date, session_id) is currently in excluded_sessions: remove it.
+      - Otherwise: insert it.
+      - Then call recompute_for_date(date) to rewrite nightly_summary
+        with the new aggregate math.
+      - Return both the new exclusion state and the updated summary
+        so the UI doesn't have to re-fetch.
+
+    404 if no session row exists at (date, session_id). This protects
+    against orphan toggles (e.g., on a night that was never imported)
+    and surfaces a clear error rather than silently creating an
+    excluded_sessions row that points at nothing.
+    """
+    db = request.app.state.db
+
+    session = sessions_repo.get(db, target_date, session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Session #{session_id} not found for night {target_date}. "
+                f"Re-import the night if the session inventory is out of date."
+            ),
+        )
+
+    new_state = sessions_repo.toggle(db, target_date, session_id)
+    summary = recompute_for_date(db, target_date)
+    if summary is None:
+        # recompute returned None only when no sessions exist — but we
+        # just verified one does, so this would be a serious bug.
+        # Surface it loudly rather than serve a stale row.
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Session toggle succeeded but recompute returned no summary "
+                f"for {target_date}. Database state may be inconsistent."
+            ),
+        )
+
+    return ToggleSessionResponse(
+        date=target_date,
+        session_id=session_id,
+        excluded=new_state,
+        summary=summary,
+    )
 
 
 # =====================================================================
