@@ -11,7 +11,7 @@ from importlib.resources import files
 from .db import DuckDBManager
 
 
-SCHEMA_VERSION = 4  # v4 (2026-05-14): sessions + excluded_sessions; backfill from nightly_events
+SCHEMA_VERSION = 5  # v5 (2026-05-14): import_jobs queue table for async imports
 
 
 _VERSION_DESCRIPTIONS = {
@@ -19,6 +19,7 @@ _VERSION_DESCRIPTIONS = {
     2: "Device-Settings expansion (+9 columns on nightly_summary)",
     3: "id columns DEFAULT nextval(); resync sequences with MAX(id)+1 of existing rows",
     4: "Phase 4 Ticket 1: sessions + excluded_sessions tables; backfill sessions from nightly_events",
+    5: "Phase 4 Ticket 2: import_jobs queue table for the in-process async worker",
 }
 
 
@@ -28,6 +29,8 @@ _SEQUENCED_TABLES: tuple[tuple[str, str], ...] = (
     ("nightly_events", "nightly_events_id_seq"),
     ("manual_logs",    "manual_logs_id_seq"),
     ("import_log",     "import_log_id_seq"),
+    # 0.8.0 — import_jobs queue, same sequence-resync invariant.
+    ("import_jobs",    "import_jobs_id_seq"),
 )
 
 

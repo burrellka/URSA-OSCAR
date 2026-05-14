@@ -123,6 +123,39 @@ class ExcludedSession(BaseModel):
     excluded_at: datetime | None = None
 
 
+# Phase 4 Ticket 2 — async import queue.
+
+ImportJobStatus = Literal["queued", "running", "completed", "failed", "orphaned"]
+
+
+class ImportJob(BaseModel):
+    """One row of the `import_jobs` table. Used by the in-process async
+    worker as the durable job-state record.
+
+    Lifecycle:
+      queued    -> created by POST /imports or POST /imports/upload
+      running   -> worker picked up; started_at stamped
+      completed -> worker finished; result_json holds the ImportLogEntry
+      failed    -> worker errored; error_message set
+      orphaned  -> the row was in 'running' when the API restarted; the
+                   worker surfaces these on next startup so the operator
+                   can decide to retry or discard them
+    """
+    id: int | None = None
+    status: ImportJobStatus
+    source_path: str | None = None
+    upload_dir: str | None = None
+    force_reimport: bool = False
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    # JSON-serialized ImportLogEntry — kept as a generic dict so the
+    # model definition doesn't get circular. The API endpoint validates
+    # it back into an ImportLogEntry shape when returning to the client.
+    result_json: dict | None = None
+    error_message: str | None = None
+
+
 class TimeseriesPoint(BaseModel):
     """One row of any *_timeseries table.
 

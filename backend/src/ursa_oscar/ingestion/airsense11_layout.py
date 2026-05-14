@@ -24,6 +24,59 @@ from pathlib import Path
 NIGHT_DIR_PATTERN = re.compile(r"^(\d{4})(\d{2})(\d{2})$")
 
 
+def locate_import_root(start: Path) -> Path:
+    """Find the right path inside ``start`` to hand to ``import_path``.
+
+    webkitdirectory uploads (and zip-extracted SD-card dumps) land under
+    a single top-level wrapper named after the folder the operator
+    picked (e.g. ``tempdir/curr sd card/...``). ``list_night_dirs``
+    keys off the presence of ``DATALOG/`` or YYYYMMDD-shaped children
+    at the path it's handed, so we walk the tree (max depth 3) and
+    pick the first directory that satisfies one of the two recognised
+    shapes:
+      1) Contains a ``DATALOG/`` subdirectory (= SD-card root)
+      2) Has YYYYMMDD-shaped immediate children (= ``DATALOG/`` itself)
+
+    Falls back to ``start`` if neither shape is found within the
+    depth budget — ``list_night_dirs`` then surfaces a clean
+    "no nights found" path from its own scan logic.
+
+    Used by:
+      - The async import worker, to locate the actual data root inside
+        a multipart-upload tempdir before invoking import_path().
+      - The 0.6.x synchronous /imports/upload endpoint (deprecated path
+        kept for back-compat in unit tests).
+    """
+    def _is_sd_root(d: Path) -> bool:
+        return (d / "DATALOG").is_dir()
+
+    def _is_datalog_root(d: Path) -> bool:
+        try:
+            return any(
+                child.is_dir() and NIGHT_DIR_PATTERN.match(child.name)
+                for child in d.iterdir()
+            )
+        except OSError:
+            return False
+
+    queue: list[tuple[Path, int]] = [(start, 0)]
+    while queue:
+        d, depth = queue.pop(0)
+        if _is_sd_root(d):
+            return d
+        if _is_datalog_root(d):
+            return d
+        if depth < 3:
+            try:
+                for child in d.iterdir():
+                    if child.is_dir():
+                        queue.append((child, depth + 1))
+            except OSError:
+                pass
+
+    return start
+
+
 def list_night_dirs(root: Path) -> list[tuple[date_t, Path]]:
     """Return a list of (night_date, datalog_subdir) tuples, sorted by date.
 

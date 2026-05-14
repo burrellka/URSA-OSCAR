@@ -112,14 +112,14 @@ export default function TimeSeriesChart({
       },
       axes: [
         {
-          stroke: 'var(--text-secondary)',
-          grid: { stroke: 'var(--chart-grid)', width: 1 },
-          ticks: { stroke: 'var(--chart-axis)', width: 1 },
+          stroke: resolveCssColor('var(--text-secondary)'),
+          grid: { stroke: resolveCssColor('var(--chart-grid)'), width: 1 },
+          ticks: { stroke: resolveCssColor('var(--chart-axis)'), width: 1 },
         },
         {
-          stroke: 'var(--text-secondary)',
-          grid: { stroke: 'var(--chart-grid)', width: 1 },
-          ticks: { stroke: 'var(--chart-axis)', width: 1 },
+          stroke: resolveCssColor('var(--text-secondary)'),
+          grid: { stroke: resolveCssColor('var(--chart-grid)'), width: 1 },
+          ticks: { stroke: resolveCssColor('var(--chart-axis)'), width: 1 },
           size: 50,
           label: unit,
           labelGap: 4,
@@ -130,13 +130,22 @@ export default function TimeSeriesChart({
       legend: { show: false },
       series: [
         { label: 'time' },
-        ...series.map((s) => ({
-          label: s.label,
-          stroke: s.stroke ?? 'var(--chart-stroke)',
-          width: s.width ?? 1.25,
-          fill: s.fill ? withAlpha(s.stroke ?? '#2563eb', 0.15) : undefined,
-          points: { show: false },
-        })),
+        // 0.8.0 chart-color fix — uPlot paints on a <canvas>, which doesn't
+        // understand CSS custom properties. We resolve each `var(--…)` to
+        // the concrete hex/rgb at uPlot-init time so the line colors actually
+        // match the legend labels (which use the same CSS var via the React
+        // `color` style — CSS handles vars there natively). Without this the
+        // canvas falls back to default black for unrecognized color tokens.
+        ...series.map((s) => {
+          const resolved = resolveCssColor(s.stroke ?? 'var(--chart-stroke)');
+          return {
+            label: s.label,
+            stroke: resolved,
+            width: s.width ?? 1.25,
+            fill: s.fill ? withAlpha(resolved, 0.15) : undefined,
+            points: { show: false },
+          };
+        }),
       ],
       padding: [12, 8, 4, 8],
       hooks: {
@@ -241,6 +250,28 @@ export default function TimeSeriesChart({
     </div>
   );
 }
+
+/**
+ * Resolve a CSS custom-property reference (``var(--foo)``) to its concrete
+ * value by reading the computed style off ``document.documentElement``.
+ *
+ * uPlot's renderer is canvas-based, and canvas paint contexts don't accept
+ * CSS variables (or ``color-mix(...)``) directly — they need real RGB / hex.
+ * Falls back to the input unchanged when:
+ *   - the string isn't a ``var(...)`` reference, or
+ *   - the variable isn't defined (we get back an empty string), or
+ *   - we're running where ``document`` isn't available (SSR-style).
+ */
+function resolveCssColor(color: string): string {
+  if (!color || !color.startsWith('var(')) return color;
+  if (typeof document === 'undefined') return color;
+  const m = color.match(/^var\((--[^,)]+)(?:,\s*([^)]+))?\)$/);
+  if (!m) return color;
+  const [, varName, fallback] = m;
+  const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  return value || (fallback?.trim() ?? color);
+}
+
 
 /** Mix a hex/rgb color with a given alpha. Falls back to rgba for unknown formats. */
 function withAlpha(stroke: string, alpha: number): string {

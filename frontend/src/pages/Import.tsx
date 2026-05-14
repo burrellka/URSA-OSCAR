@@ -1,12 +1,19 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Upload as UploadIcon } from 'lucide-react';
 import { api, ApiError } from '../api/client';
-import type { ImportLogEntry, SkippedNight } from '../api/types';
+import type { ImportJob, SkippedNight } from '../api/types';
 
 export default function ImportPage() {
   const [path, setPath] = useState('/cpap-import');
-  const [running, setRunning] = useState(false);
-  const [result, setResult] = useState<ImportLogEntry | null>(null);
+  // `submitting` covers the time between the user clicking Start /
+  // Choose folder and the API returning the enqueued job. Brief — the
+  // POST itself is sub-second.
+  const [submitting, setSubmitting] = useState(false);
+  // 0.8.0 — `latestJob` is the job from the most recent submission in
+  // this session. We poll it until it reaches a terminal state. Result
+  // tile renders from latestJob.result_json once status='completed'.
+  const [latestJob, setLatestJob] = useState<ImportJob | null>(null);
+  const [activeJobs, setActiveJobs] = useState<ImportJob[]>([]);
   const [error, setError] = useState<string | null>(null);
   // 0.6.3 — force re-parse toggle. Default OFF so re-uploading the same
   // SD card is cheap (importer skips known nights). User opts in only
@@ -18,13 +25,55 @@ export default function ImportPage() {
   const [uploadProgress, setUploadProgress] = useState<{ sent: number; total: number } | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
 
+  // 0.8.0 polling loop — while there's any in-flight work (latestJob
+  // hasn't reached terminal yet, OR there are active jobs from a
+  // different session / tab / CLI), poll every 2s. Stop when nothing's
+  // active.
+  useEffect(() => {
+    const shouldPoll =
+      (latestJob && (latestJob.status === 'queued' || latestJob.status === 'running'))
+      || activeJobs.length > 0;
+    if (!shouldPoll) return;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const tick = async () => {
+      try {
+        const fresh = await api.listImportJobs({ active_only: true });
+        if (cancelled) return;
+        setActiveJobs(fresh);
+        // If we're tracking a specific job, refresh its state too. If
+        // it's no longer active (finished while we were sleeping),
+        // fetch the terminal row so the result tile populates.
+        if (latestJob) {
+          const stillActive = fresh.find((j) => j.id === latestJob.id);
+          if (stillActive) {
+            setLatestJob(stillActive);
+          } else if (latestJob.status === 'queued' || latestJob.status === 'running') {
+            const finished = await api.getImportJob(latestJob.id);
+            if (!cancelled) setLatestJob(finished);
+          }
+        }
+      } catch {
+        // Polling failures are transient — just retry on the next tick.
+      }
+      if (!cancelled) timer = window.setTimeout(tick, 2000);
+    };
+
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [latestJob, activeJobs.length]);
+
   async function go() {
-    setRunning(true);
+    setSubmitting(true);
     setError(null);
-    setResult(null);
+    setLatestJob(null);
     try {
-      const r = await api.triggerImport(path, forceReimport);
-      setResult(r);
+      const job = await api.triggerImport(path, forceReimport);
+      setLatestJob(job);
     } catch (e) {
       if (e instanceof ApiError) {
         setError(`${e.message}${e.body ? ` — ${JSON.stringify(e.body)}` : ''}`);
@@ -32,24 +81,24 @@ export default function ImportPage() {
         setError(String(e));
       }
     } finally {
-      setRunning(false);
+      setSubmitting(false);
     }
   }
 
   async function uploadFolder(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    setRunning(true);
+    setSubmitting(true);
     setError(null);
-    setResult(null);
+    setLatestJob(null);
     setUploadProgress({ sent: 0, total: 0 });
     try {
-      const r = await api.uploadFolder(
+      const job = await api.uploadFolder(
         Array.from(files),
         (sent, total) => setUploadProgress({ sent, total }),
         forceReimport,
       );
-      setResult(r);
+      setLatestJob(job);
     } catch (e2) {
       if (e2 instanceof ApiError) {
         setError(`${e2.message}${e2.body ? ` — ${JSON.stringify(e2.body)}` : ''}`);
@@ -57,18 +106,62 @@ export default function ImportPage() {
         setError(String(e2));
       }
     } finally {
-      setRunning(false);
+      setSubmitting(false);
       setUploadProgress(null);
       // Reset input so the same folder can be re-picked.
       if (folderInputRef.current) folderInputRef.current.value = '';
     }
   }
 
+  // Convenience derivations used to drive button/banner states.
+  const inFlight = latestJob && (latestJob.status === 'queued' || latestJob.status === 'running');
+  const running = submitting || !!inFlight;
+  const result = latestJob?.result_json ?? null;
+
+  // Active jobs we DIDN'T trigger from this page session — e.g., a CLI
+  // import in another shell, or a Phase 4 Ticket 3 watcher-triggered
+  // import. Surfaces here so the operator can see what's running.
+  const otherActiveJobs = activeJobs.filter((j) => j.id !== latestJob?.id);
+
   return (
     <div>
       <div className="page-header">
         <h1 className="page-title">Import</h1>
       </div>
+
+      {otherActiveJobs.length > 0 && (
+        <div className="chart-card" style={{ maxWidth: '720px', marginBottom: '1rem' }}>
+          <h2 style={{ fontSize: '1rem', fontWeight: 600, marginTop: 0, marginBottom: '0.5rem' }}>
+            Active jobs
+          </h2>
+          <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+            Background imports currently running. Started from another tab,
+            the CLI, or the watcher.
+          </div>
+          {otherActiveJobs.map((j) => (
+            <div
+              key={j.id}
+              style={{
+                display: 'flex', alignItems: 'baseline', gap: '0.5rem',
+                padding: '0.4rem 0', borderTop: '1px solid var(--border-color)',
+              }}
+            >
+              <span className="status-pill warn">{j.status}</span>
+              <code style={{ fontSize: '0.8125rem' }}>#{j.id}</code>
+              <span style={{ color: 'var(--text-secondary)', fontSize: '0.8125rem' }}>
+                {j.source_path
+                  ? <>path <code>{j.source_path}</code></>
+                  : <>folder upload</>}
+              </span>
+              {j.force_reimport && (
+                <span style={{ fontSize: '0.75rem', color: 'var(--ahi-warn, #d97706)' }}>
+                  force
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="chart-card" style={{ maxWidth: '720px' }}>
         <div className="field" style={{ marginBottom: '1rem' }}>
@@ -181,7 +274,61 @@ export default function ImportPage() {
           </div>
         )}
 
-        {result && (
+        {/* 0.8.0 — in-flight state. The endpoint returns a queued job
+            immediately; the worker takes over from there. This panel
+            shows status until the job lands at completed/failed. */}
+        {inFlight && latestJob && (
+          <div
+            style={{
+              marginTop: '1rem',
+              padding: '0.6rem 0.85rem',
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: '6px',
+              fontSize: '0.875rem',
+              color: 'var(--text-secondary)',
+            }}
+          >
+            <span
+              className={`status-pill ${latestJob.status === 'running' ? 'warn' : 'warn'}`}
+              style={{ marginRight: '0.5rem' }}
+            >
+              {latestJob.status}
+            </span>
+            Import job <code>#{latestJob.id}</code>
+            {latestJob.status === 'queued' && ' — waiting for the worker to pick up…'}
+            {latestJob.status === 'running' && ' — processing nights, parsing EDF…'}
+          </div>
+        )}
+
+        {/* 0.8.0 — failed job surface. Worker caught an exception;
+            the diagnostic lands in error_message rather than crashing. */}
+        {latestJob && latestJob.status === 'failed' && (
+          <div className="error-banner" style={{ marginTop: '1rem' }}>
+            <strong>Import failed</strong>
+            {latestJob.error_message && (
+              <div style={{
+                marginTop: '0.5rem',
+                fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+              }}>
+                {latestJob.error_message}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 0.8.0 — orphaned: the API restarted while this job was in
+            flight. Show it so the operator can re-trigger if needed. */}
+        {latestJob && latestJob.status === 'orphaned' && (
+          <div className="error-banner" style={{ marginTop: '1rem' }}>
+            Import job was orphaned by an API restart. Re-trigger if the data
+            isn't visible.
+          </div>
+        )}
+
+        {result && latestJob?.status === 'completed' && (
           <div style={{ marginTop: '1rem' }}>
             <span
               className={`status-pill ${

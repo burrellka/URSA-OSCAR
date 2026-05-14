@@ -3,7 +3,11 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Trash2, AlertTriangle } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { PreviewDeleteResult } from '../api/client';
-import type { NightlyEvent, NightlySummary, Session } from '../api/types';
+import type { NightlyEvent, NightlySummary, Session, UserProfile } from '../api/types';
+import {
+  shiftEpochSecondsForDisplay,
+  shiftIsoForDisplay,
+} from '../lib/timeOffset';
 import { formatAhi, formatMinutesAsHM } from '../lib/format';
 import TimeSeriesChart from '../components/TimeSeriesChart';
 import EventRug from '../components/EventRug';
@@ -57,7 +61,11 @@ export default function Daily() {
   // The summary block dims + shows "Recomputing…" so the operator knows
   // the numbers below are about to update.
   const [recomputing, setRecomputing] = useState(false);
-  const [waveforms, setWaveforms] = useState<SeriesPayload>({});
+  // Raw waveforms — the unshifted timestamps off the API. Display
+  // timestamps are derived by applying the operator's device-clock
+  // offset (profile.display.device_clock) below.
+  const [rawWaveforms, setRawWaveforms] = useState<SeriesPayload>({});
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [allDates, setAllDates] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [wfLoading, setWfLoading] = useState(false);
@@ -102,11 +110,63 @@ export default function Daily() {
     let cancelled = false;
     setWfLoading(true);
     api.getTimeseries(date, [...TRACK_SERIES])
-      .then((resp) => { if (!cancelled) setWaveforms(resp.series); })
-      .catch(() => { if (!cancelled) setWaveforms({}); })
+      .then((resp) => { if (!cancelled) setRawWaveforms(resp.series); })
+      .catch(() => { if (!cancelled) setRawWaveforms({}); })
       .finally(() => { if (!cancelled) setWfLoading(false); });
     return () => { cancelled = true; };
   }, [date]);
+
+  // Phase 4 Ticket 4 — load the profile once for the device-clock
+  // offset. Cheap (single JSON GET); we tolerate a null profile by
+  // skipping the offset (helpers handle the null case gracefully).
+  useEffect(() => {
+    let cancelled = false;
+    api.getProfile()
+      .then((p) => { if (!cancelled) setProfile(p); })
+      .catch(() => { if (!cancelled) setProfile(null); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Phase 4 Ticket 4 — apply the device-clock shift to every displayed
+  // timestamp. Memoized on (raw data, profile) so we don't re-shift on
+  // every render.
+  const waveforms = useMemo<SeriesPayload>(() => {
+    if (!profile) return rawWaveforms;
+    const out: SeriesPayload = {};
+    for (const [k, s] of Object.entries(rawWaveforms)) {
+      out[k] = {
+        ...s,
+        timestamps: shiftEpochSecondsForDisplay(s.timestamps, profile),
+      };
+    }
+    return out;
+  }, [rawWaveforms, profile]);
+
+  const shiftedEvents = useMemo<NightlyEvent[]>(() => {
+    if (!profile) return events;
+    return events.map((ev) => ({
+      ...ev,
+      timestamp: shiftIsoForDisplay(ev.timestamp, profile),
+    }));
+  }, [events, profile]);
+
+  const shiftedSessions = useMemo<Session[]>(() => {
+    if (!profile) return sessions;
+    return sessions.map((s) => ({
+      ...s,
+      start_ts: shiftIsoForDisplay(s.start_ts, profile),
+      end_ts: shiftIsoForDisplay(s.end_ts, profile),
+    }));
+  }, [sessions, profile]);
+
+  const shiftedSummary = useMemo<NightlySummary | null>(() => {
+    if (!profile || !summary) return summary;
+    return {
+      ...summary,
+      start_time: summary.start_time ? shiftIsoForDisplay(summary.start_time, profile) : summary.start_time,
+      end_time: summary.end_time ? shiftIsoForDisplay(summary.end_time, profile) : summary.end_time,
+    };
+  }, [summary, profile]);
 
   const idx = date ? allDates.indexOf(date) : -1;
   const prev = idx > 0 ? allDates[idx - 1] : null;
@@ -204,7 +264,7 @@ export default function Daily() {
         <div className="empty-state">No night data yet. Use <a href="/import">Import</a> to load some.</div>
       )}
 
-      {summary && (
+      {shiftedSummary && (
         <>
           {recomputing && (
             <div
@@ -222,20 +282,20 @@ export default function Daily() {
             </div>
           )}
           <div style={{ opacity: recomputing ? 0.55 : 1, transition: 'opacity 120ms' }}>
-            <SummaryTiles s={summary} />
+            <SummaryTiles s={shiftedSummary} />
           </div>
           <Charts
-            summary={summary}
-            events={events}
+            summary={shiftedSummary}
+            events={shiftedEvents}
             waveforms={waveforms}
             wfLoading={wfLoading}
             compact={compact}
           />
           <BottomSection
-            s={summary}
-            events={events}
+            s={shiftedSummary}
+            events={shiftedEvents}
             waveforms={waveforms}
-            sessions={sessions}
+            sessions={shiftedSessions}
             onToggleSession={handleToggleSession}
             recomputing={recomputing}
           />

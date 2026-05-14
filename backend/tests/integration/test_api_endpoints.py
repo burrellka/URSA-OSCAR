@@ -197,6 +197,59 @@ def test_profile_initialized_on_first_start(api_client):
     assert body["version"] == 1
     assert body["clinical"]["active_medications"] == []
     assert body["display"]["timezone"] == "UTC"
+    # Phase 4 Ticket 4 — DeviceClock defaults must populate on first
+    # read, even when the on-disk profile.json predates the field.
+    # Pydantic's default_factory handles this; this test confirms the
+    # API surfaces it correctly.
+    dc = body["display"]["device_clock"]
+    assert dc["mode"] == "none"
+    assert dc["country"] is None
+    assert dc["device_utc_offset_minutes"] is None
+    assert dc["manual_offset_minutes"] == 0
+
+
+def test_profile_device_clock_patch_roundtrip(api_client):
+    """Phase 4 Ticket 4 — operator can save a device-clock config and
+    read it back. Covers the 'EST device, USA, auto-DST' scenario."""
+    r = api_client.patch(
+        "/api/v1/profile",
+        json={
+            "display": {
+                "device_clock": {
+                    "country": "USA",
+                    "mode": "auto",
+                    "device_utc_offset_minutes": -300,  # US EST
+                    "manual_offset_minutes": 0,
+                },
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    dc = body["display"]["device_clock"]
+    assert dc["country"] == "USA"
+    assert dc["mode"] == "auto"
+    assert dc["device_utc_offset_minutes"] == -300
+    # Other display fields preserved via deep-merge.
+    assert body["display"]["date_format"] == "YYYY-MM-DD"
+
+    # Re-read to confirm persistence to disk.
+    r2 = api_client.get("/api/v1/profile")
+    assert r2.status_code == 200
+    dc2 = r2.json()["display"]["device_clock"]
+    assert dc2["mode"] == "auto"
+    assert dc2["device_utc_offset_minutes"] == -300
+
+
+def test_profile_device_clock_modes_validate(api_client):
+    """Mode is constrained to none/auto/static — anything else 422s."""
+    r = api_client.patch(
+        "/api/v1/profile",
+        json={"display": {"device_clock": {"mode": "bogus"}}},
+    )
+    # PATCH's deep-merge runs validation on the merged result, so a
+    # bad mode rejected by Pydantic surfaces as 422 or 400.
+    assert r.status_code in (400, 422)
 
 
 def test_profile_patch_deep_merge(api_client):

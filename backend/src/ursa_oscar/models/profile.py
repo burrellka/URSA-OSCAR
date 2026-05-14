@@ -41,6 +41,56 @@ from pydantic import BaseModel, Field
 # Display & preferences (Tab 1 in the Profile UI)
 # ----------------------------------------------------------------------
 
+class DeviceClock(BaseModel):
+    """Phase 4 Ticket 4 — operator's CPAP device clock configuration.
+
+    ResMed AirSense 11 (and most CPAP firmware) doesn't auto-adjust for
+    DST. The operator sets the device clock once and it stays on that
+    offset year-round. URSA reads the EDF wall-clock timestamps as-is
+    (the data is canonical) and applies this configuration at display
+    time to render the operator's ACTUAL local wall-clock value.
+
+    Three modes:
+      "none"   — display exactly what the device recorded; no shift.
+                 The right choice when the device clock already follows
+                 the operator's local time including DST adjustments.
+      "auto"   — device is on a fixed offset; URSA dynamically computes
+                 the shift per-timestamp by comparing the browser's
+                 local offset for that date against ``device_utc_offset_minutes``.
+                 Handles spring-forward and fall-back automatically.
+      "static" — apply a fixed shift in minutes from ``manual_offset_minutes``
+                 to every displayed time. Escape hatch for setups
+                 where ``auto`` produces wrong values.
+    """
+
+    country: str | None = Field(
+        default=None,
+        description="Operator's country (informational). Used by the URSA "
+                    "agent for session context; not used by display math.",
+    )
+    mode: Literal["none", "auto", "static"] = Field(
+        default="none",
+        description="Strategy for converting recorded device-clock time "
+                    "into displayed wall-clock. 'none' (default) preserves "
+                    "the recorded value. 'auto' uses device_utc_offset_minutes "
+                    "+ browser TZ to compute the shift per-date (DST-aware). "
+                    "'static' applies a fixed manual_offset_minutes shift.",
+    )
+    device_utc_offset_minutes: int | None = Field(
+        default=None,
+        description="The device's static offset from UTC, in minutes. "
+                    "Example: -300 = the device is set to US EST year-round "
+                    "(UTC-5). Used only when mode='auto'. None when mode "
+                    "is 'none' or 'static'.",
+    )
+    manual_offset_minutes: int = Field(
+        default=0,
+        description="Fixed shift in minutes (positive or negative). Used "
+                    "only when mode='static'. Example: +60 bumps every "
+                    "displayed timestamp forward one hour.",
+    )
+
+
 class DisplayPreferences(BaseModel):
     """Identity + UI rendering preferences."""
 
@@ -71,6 +121,11 @@ class DisplayPreferences(BaseModel):
         default="auto",
         description="UI theme. Phase 2 ships light only; this field is a forward-looking "
                     "placeholder for Phase 4+ theming work.",
+    )
+    device_clock: DeviceClock = Field(
+        default_factory=DeviceClock,
+        description="Phase 4 Ticket 4 — display-time shift to compensate "
+                    "for a CPAP device clock that doesn't auto-adjust for DST.",
     )
 
 
@@ -275,6 +330,7 @@ class UserProfile(BaseModel):
 
 
 __all__ = [
+    "DeviceClock",
     "DisplayPreferences",
     "Diagnosis",
     "Provider",

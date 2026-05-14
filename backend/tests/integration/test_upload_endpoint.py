@@ -206,17 +206,47 @@ def _post_upload(client: TestClient, named_files: list[tuple[str, bytes]]):
     return client.post("/api/v1/imports/upload", files=parts)
 
 
+def _wait_for_job(client: TestClient, job_id: int, timeout_s: float = 60.0) -> dict:
+    """Poll /imports/jobs/{id} until status is terminal (completed/failed/orphaned),
+    then return the job row. 0.8.0 — the upload endpoint enqueues rather
+    than blocking, so e2e tests need to await worker completion.
+
+    Test budget defaults to 60s — generous because a full SD-card import
+    can take a few seconds and the worker polls at 1s intervals.
+    """
+    import time
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        r = client.get(f"/api/v1/imports/jobs/{job_id}")
+        assert r.status_code == 200, r.text
+        job = r.json()
+        if job["status"] in {"completed", "failed", "orphaned"}:
+            return job
+        time.sleep(0.25)
+    raise AssertionError(f"job {job_id} did not finish within {timeout_s}s")
+
+
 def test_upload_real_sd_card_forward_slash(api_client, real_sd_files):
     """The full SD card uploads cleanly with forward-slash filenames
-    (the path shape Chrome/Edge sends on most platforms)."""
+    (the path shape Chrome/Edge sends on most platforms).
+
+    0.8.0 — the endpoint enqueues; we poll the job to await the result
+    rather than getting the ImportLogEntry inline.
+    """
     r = _post_upload(api_client, real_sd_files)
     assert r.status_code == 200, r.text
-    body = r.json()
+    job = r.json()
+    assert job["status"] == "queued"
+    assert job["upload_dir"] is not None
+    finished = _wait_for_job(api_client, job["id"])
+    assert finished["status"] == "completed", finished
+    result = finished["result_json"]
+    assert result is not None
     # The ResMed SD card has been worn long enough to register multiple
     # nights — just assert we got non-zero imports rather than pinning to
     # a fixed count that drifts as the operator wears the device.
-    assert body["nights_imported"] > 0
-    assert body["status"] in {"completed", "partial"}
+    assert result["nights_imported"] > 0
+    assert result["status"] in {"completed", "partial"}
 
 
 def test_upload_real_sd_card_backslash_filenames(api_client, real_sd_files):
@@ -227,8 +257,13 @@ def test_upload_real_sd_card_backslash_filenames(api_client, real_sd_files):
     backslash_files = [(name.replace("/", "\\"), content) for name, content in real_sd_files]
     r = _post_upload(api_client, backslash_files)
     assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["nights_imported"] > 0
+    job = r.json()
+    assert job["status"] == "queued"
+    finished = _wait_for_job(api_client, job["id"])
+    assert finished["status"] == "completed", finished
+    result = finished["result_json"]
+    assert result is not None
+    assert result["nights_imported"] > 0
 
 
 def test_upload_real_sd_card_drops_os_junk(api_client, real_sd_files, tmp_path):

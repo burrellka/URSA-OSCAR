@@ -222,6 +222,40 @@ CREATE TABLE IF NOT EXISTS excluded_sessions (
     PRIMARY KEY (date, session_id)
 );
 
+-- Phase 4 Ticket 2 (v5, 2026-05-14) — async import queue.
+--
+-- Job-state backing store for the in-process import worker. Each
+-- import — whether triggered via POST /imports (path-based) or POST
+-- /imports/upload (folder upload) — lands here in status 'queued'.
+-- The worker (an asyncio task started at app lifespan) picks the
+-- oldest queued job, flips status to 'running', invokes
+-- import_path(), then writes status to 'completed' or 'failed' with
+-- the ImportLogEntry serialized into result_json (or error_message
+-- on failure).
+--
+-- Why DuckDB-backed rather than in-memory: API restarts shouldn't
+-- lose in-flight job state. A 'running' row left after restart
+-- gets surfaced to the operator as 'orphaned' so they can decide
+-- whether to retry. Re-running the v5 migration is idempotent.
+--
+-- One worker, one job at a time. No concurrent imports needed for
+-- a single operator, and parallel writes against a single DuckDB
+-- file would serialize through the writer lock regardless.
+CREATE SEQUENCE IF NOT EXISTS import_jobs_id_seq START 1;
+CREATE TABLE IF NOT EXISTS import_jobs (
+    id BIGINT PRIMARY KEY,
+    status VARCHAR NOT NULL,        -- queued | running | completed | failed
+    source_path VARCHAR,            -- for path-based imports
+    upload_dir VARCHAR,             -- for folder-upload imports (tempdir path)
+    force_reimport BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    result_json JSON,               -- serialized ImportLogEntry on success
+    error_message VARCHAR
+);
+ALTER TABLE import_jobs ALTER COLUMN id SET DEFAULT nextval('import_jobs_id_seq');
+
 -- Sequences for surrogate IDs are now declared inline above each table
 -- they belong to (Phase 3 Item 1A), so that DEFAULT nextval() can
 -- reference them in the same logical block. The redundant declarations

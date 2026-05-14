@@ -8,7 +8,6 @@ uploads (Item 2). Phase 4 will move to an async job queue with
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 import tempfile
 import uuid
@@ -18,8 +17,10 @@ from typing import Optional
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel, Field
 
-from ..ingestion.importer import import_path
-from ..models.domain import ImportLogEntry
+from ..ingestion.airsense11_layout import locate_import_root
+from ..ingestion.importer import import_path  # noqa: F401  (kept for back-compat test imports)
+from ..models.domain import ImportJob, ImportLogEntry  # noqa: F401  (ImportLogEntry retained for tests)
+from ..storage.repositories import import_jobs as jobs_repo
 
 logger = logging.getLogger(__name__)
 
@@ -74,83 +75,102 @@ class ImportRequest(BaseModel):
     )
 
 
-@router.post("/imports", response_model=ImportLogEntry)
+@router.post("/imports", response_model=ImportJob)
 def trigger_import(
     req: ImportRequest,
     request: Request,
     force: bool = False,
-) -> ImportLogEntry:
-    """Trigger a path-based import.
+) -> ImportJob:
+    """Enqueue a path-based import job.
+
+    Phase 4 Ticket 2 — this endpoint no longer blocks for the duration
+    of the import. It validates the source path, enqueues a row in
+    import_jobs (status='queued'), and returns the job immediately
+    with status='queued'. The ImportWorker picks it up on its next
+    poll (within ~1s) and processes it; the operator polls
+    /imports/jobs/{id} for status + result, or watches the Import
+    page's Active Jobs section.
 
     Query params:
       force: if true, re-parse nights even when a `nightly_summary` row
-             already exists for that date. Defaults to false — the
-             importer skips already-known nights for speed, which is
-             the dominant path when the operator re-plugs the same SD
-             card after a few new nights have accumulated.
+             already exists. Defaults to false — the importer skips
+             already-known nights for speed.
     """
     db = request.app.state.db
     src = Path(req.source_path)
     if not src.exists():
         raise HTTPException(status_code=400, detail=f"Source path does not exist: {src}")
-    return import_path(
-        src, db,
-        include_timeseries=req.include_timeseries,
-        skip_existing=not force,
+    return jobs_repo.enqueue(
+        db,
+        source_path=str(src),
+        force_reimport=force,
     )
 
 
-@router.get("/imports/{job_id}", response_model=ImportLogEntry)
-def get_import_status(job_id: int, request: Request) -> ImportLogEntry:
-    """Phase 1 stub — synchronous imports don't have queryable job state yet.
+@router.get("/imports/jobs", response_model=list[ImportJob])
+def list_import_jobs(
+    request: Request,
+    active_only: bool = False,
+    limit: int = 50,
+) -> list[ImportJob]:
+    """List import jobs, newest first.
 
-    Returns 404 to indicate the endpoint exists but Phase 1 imports complete
-    synchronously, so there's no async job to look up. Phase 4 will provide
-    real status.
+    Query params:
+      active_only: when true, only return rows with status in
+                   (queued, running). The Import page polls this every
+                   2s while any job is active.
+      limit: max rows to return (defaults to 50). Recent imports tail.
     """
-    raise HTTPException(
-        status_code=404,
-        detail=(
-            "Async import jobs land in Phase 4. Phase 1 imports complete "
-            "synchronously inside POST /api/imports."
-        ),
-    )
+    db = request.app.state.db
+    if active_only:
+        return jobs_repo.list_active(db)
+    return jobs_repo.list_jobs(db, limit=limit)
 
 
-@router.post("/imports/upload", response_model=ImportLogEntry)
+@router.get("/imports/jobs/{job_id}", response_model=ImportJob)
+def get_import_job(job_id: int, request: Request) -> ImportJob:
+    """Single-job status lookup. 404 when no job exists for the id."""
+    db = request.app.state.db
+    job = jobs_repo.get(db, job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404, detail=f"No import job with id={job_id}",
+        )
+    return job
+
+
+@router.post("/imports/upload", response_model=ImportJob)
 async def upload_folder_and_import(
     request: Request,
     files: list[UploadFile] = File(...),
     force: bool = False,
-) -> ImportLogEntry:
-    """Phase 3 Item 2 — browser-side folder-upload import.
+) -> ImportJob:
+    """Phase 3 Item 2 (refactored for Phase 4 Ticket 2) — browser-side
+    folder-upload import, enqueued.
 
     Accepts a multipart form-data payload from a browser ``<input
     type="file" webkitdirectory>`` picker. Each part's filename includes
     the relative path inside the chosen folder (preserved via
     webkitRelativePath on the browser side); we reconstruct that tree
-    into a tempdir on the API container, then locate the right import
-    root inside that tree, and run the existing importer.
+    into a tempdir on the API container, locate the right import root,
+    and ENQUEUE a job pointing at it. The ImportWorker picks the job
+    up and runs the actual EDF parse off the request thread. Tempdir
+    cleanup also moves to the worker so it persists for the duration
+    of the import.
 
-    Security / sanity guards:
+    Behavior change from 0.7.x:
+      - Returns immediately with the enqueued ImportJob (status='queued').
+        No more multi-second blocking request for big SD cards.
+      - 400 on no-usable-files still fires here (synchronously) — the
+        sanitization is cheap and surfacing the diagnostic in the
+        original request keeps the operator UX tight.
+
+    Security / sanity guards (unchanged):
       - Per-file size cap (10 MB).
-      - Suffix allowlist (.edf, .crc, .json, .jnl, .tgt, .dat). The
-        importer only consumes ``.edf``; the rest are kept so a full
-        SD-card upload round-trips cleanly. Anything else is silently
-        dropped — defense if the user picked the wrong folder.
-      - Reconstructed paths are normalized to forward slashes, leading
-        drive letters and slash prefixes are stripped, '..' segments
-        and absolute paths are rejected.
-      - Tempdir is cleaned up in finally so a failed import doesn't
-        leak GBs of EDF data into /tmp.
-      - Per-rejection counts + sample filenames are surfaced in the 400
-        response when nothing usable lands, so the operator can see
-        what the browser actually sent.
-
-    The upload is whole-file buffered into memory then streamed to disk
-    per file — UploadFile.read() returns bytes. For multi-GB SD cards
-    this may become a problem; today the per-file 10 MB cap means
-    the import-time peak memory is bounded.
+      - Suffix allowlist (.edf, .crc, .json, .jnl, .tgt, .dat).
+      - Path-traversal protection in _sanitize_relpath.
+      - OS-junk segment filter (System Volume Information, etc.).
+      - Diagnostic 400 with per-reason counts + sample raw filenames.
     """
     db = request.app.state.db
 
@@ -217,6 +237,8 @@ async def upload_folder_and_import(
                 for n in names:
                     samples_flat.append(f"[{reason}] {n}")
             samples_str = " ; ".join(samples_flat[:10])
+            # Clean up immediately — no worker is going to pick this up.
+            shutil.rmtree(tempdir, ignore_errors=True)
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -226,37 +248,27 @@ async def upload_folder_and_import(
                 ),
             )
 
-        # webkitdirectory hands us paths rooted at the picked folder name
-        # (e.g. 'curr sd card/DATALOG/...'). The importer's layout detector
-        # looks for DATALOG/ at the supplied root, so we have to peel off
-        # that outer wrapper. Walk the tree and prefer:
-        #   1. A directory containing a DATALOG/ subdirectory (= SD root)
-        #   2. A directory whose immediate children are YYYYMMDD/ (= DATALOG)
-        #   3. Fall back to tempdir itself.
-        # This also lets a future user pick just a DATALOG/ subfolder or
-        # a sub-tree without surprising them.
-        import_root = _locate_import_root(tempdir)
         logger.info(
-            "upload_folder_and_import: %d files accepted, rejected=%s, root=%s",
-            accepted, rejected, import_root,
+            "upload_folder_and_import: %d files accepted, rejected=%s, enqueueing tempdir=%s",
+            accepted, rejected, tempdir,
         )
-
-        # Run the existing importer. include_timeseries=True matches the
-        # source-path path's default. skip_existing=not force is the
-        # 0.6.3 dedup path — re-uploads of the same SD card skip
-        # already-known nights for a fast re-import.
-        return import_path(
-            import_root, db,
-            include_timeseries=True,
-            skip_existing=not force,
+        # Enqueue and return immediately. The worker runs
+        # _locate_import_root to find the right subdirectory, then
+        # invokes import_path(), then removes the entire tempdir on
+        # completion or failure. We pass the WHOLE tempdir (not the
+        # import root) so cleanup wipes everything we wrote — including
+        # the picked-folder wrapper that wraps the SD-card layout.
+        return jobs_repo.enqueue(
+            db,
+            upload_dir=str(tempdir),
+            force_reimport=force,
         )
-    finally:
-        # Always clean up — even on import failure, the EDFs are now
-        # transient state.
-        try:
-            shutil.rmtree(tempdir, ignore_errors=True)
-        except Exception:
-            logger.exception("upload_folder_and_import: tempdir cleanup failed for %s", tempdir)
+    except Exception:
+        # Any failure in receive/sanitize: bin the tempdir so we don't
+        # leak. The 400 path above already did this — this catch is for
+        # the truly unexpected (disk full, IOError, etc.).
+        shutil.rmtree(tempdir, ignore_errors=True)
+        raise
 
 
 # Tuple return shape — (normalized Path on success, reason string on
@@ -313,47 +325,8 @@ def _sanitize_relpath(name: str) -> _RelpathResult:
     return rel, None
 
 
-def _locate_import_root(tempdir: Path) -> Path:
-    """Find the right path inside ``tempdir`` to hand to ``import_path``.
-
-    webkitdirectory uploads land under a single top-level wrapper named
-    after the folder the user picked (e.g. ``tempdir/curr sd card/...``).
-    The importer's layout detector keys off the presence of ``DATALOG/``
-    or YYYYMMDD-shaped children at the root it gets handed, so we walk
-    the tree (max depth 3) and pick the first dir that satisfies one of
-    the two recognised shapes. Falls back to ``tempdir`` if neither
-    matches — the importer then surfaces a clean "no nights found"
-    error from its own layout detector.
-    """
-    night_re = re.compile(r"^\d{8}$")
-
-    def _is_sd_root(d: Path) -> bool:
-        return (d / "DATALOG").is_dir()
-
-    def _is_datalog_root(d: Path) -> bool:
-        try:
-            return any(
-                child.is_dir() and night_re.match(child.name)
-                for child in d.iterdir()
-            )
-        except OSError:
-            return False
-
-    # BFS to depth 3 — cheap, and we never expect to dig further than
-    # SD-root/folder-wrapper.
-    queue: list[tuple[Path, int]] = [(tempdir, 0)]
-    while queue:
-        d, depth = queue.pop(0)
-        if _is_sd_root(d):
-            return d
-        if _is_datalog_root(d):
-            return d
-        if depth < 3:
-            try:
-                for child in d.iterdir():
-                    if child.is_dir():
-                        queue.append((child, depth + 1))
-            except OSError:
-                pass
-
-    return tempdir
+# _locate_import_root moved to ingestion/airsense11_layout.py (locate_import_root)
+# in 0.8.0 so the worker can call it without depending on the api/ layer.
+# The existing test_upload_endpoint.py keeps its local-name import compatible
+# via the re-export below.
+_locate_import_root = locate_import_root

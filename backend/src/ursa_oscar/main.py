@@ -16,6 +16,7 @@ from .api import (
     system, timeseries, vocab,
 )
 from .config import get_settings
+from .services.import_worker import ImportWorker
 from .storage import profile_store, vocab_store
 from .storage.db import DuckDBManager
 from .storage.migrations import apply_migrations
@@ -29,6 +30,11 @@ async def lifespan(app: FastAPI):
     profile store (``/data/profile.json``). If the file is absent the
     packaged community default is copied into place; if it's present we
     leave it untouched.
+
+    Phase 4 Ticket 2 — also spawns the async ImportWorker that drains
+    the import_jobs queue. The worker runs as an asyncio task in this
+    process; it's stopped on shutdown so the container can exit
+    cleanly without leaking the task.
     """
     settings = get_settings()
     db = DuckDBManager(settings.db_path, read_only=False)
@@ -42,9 +48,14 @@ async def lifespan(app: FastAPI):
     profile_store.ensure_initialized(profile_path)
     vocab_store.ensure_initialized(vocab_path)
     app.state.db = db
+
+    worker = ImportWorker(db)
+    worker.start()
+    app.state.import_worker = worker
     try:
         yield
     finally:
+        await worker.stop()
         db.close()
 
 

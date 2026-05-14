@@ -4,6 +4,7 @@ import { api, ApiError } from '../api/client';
 import type {
   ActiveMedication,
   ClinicalContext,
+  DeviceClock,
   Diagnosis,
   DisplayPreferences,
   EquipmentItem,
@@ -259,6 +260,13 @@ function DisplayTab({ initial, dirtyBaseline, onSave }: {
         onChange={(v) => setS({ ...s, theme: v as DisplayPreferences['theme'] })}
       />
 
+      {/* Phase 4 Ticket 4 — Device Clock section. Compensates for CPAP
+          devices (like the AirSense 11) that don't auto-adjust for DST. */}
+      <DeviceClockEditor
+        value={s.device_clock}
+        onChange={(dc) => setS({ ...s, device_clock: dc })}
+      />
+
       <SaveButton dirty={dirty} label="Save display settings" onClick={() => onSave(s)} />
     </div>
   );
@@ -312,6 +320,144 @@ function RadioRow({ label, value, options, onChange }: {
     </div>
   );
 }
+
+
+/**
+ * Phase 4 Ticket 4 — Device Clock editor.
+ *
+ * ResMed CPAP firmware doesn't auto-adjust for DST. Once the operator
+ * sets the clock, it stays on that offset year-round. URSA stores
+ * what the device recorded (canonical) and applies this configuration
+ * at display time. Three modes:
+ *
+ *   none   — display exactly what the device recorded; no shift.
+ *   auto   — device is on a fixed offset (e.g., EST year-round); URSA
+ *            computes the per-date shift by comparing the browser's
+ *            local UTC offset (DST-aware) to the device's static offset.
+ *   static — apply a fixed manual shift to every displayed time.
+ *
+ * The country field is informational — the URSA agent reads it for
+ * session context.
+ */
+function DeviceClockEditor({
+  value, onChange,
+}: { value: DeviceClock; onChange: (dc: DeviceClock) => void }) {
+  return (
+    <div style={{
+      marginTop: '1.25rem', marginBottom: '0.75rem',
+      paddingTop: '1rem', borderTop: '1px solid var(--border-color)',
+    }}>
+      <div style={{ fontSize: '0.9375rem', fontWeight: 600, marginBottom: '0.5rem' }}>
+        Device clock
+      </div>
+      <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+        Most CPAP devices (including the ResMed AirSense 11) don't auto-adjust for
+        Daylight Saving Time. Tell URSA how your device's clock is set so chart
+        timestamps render in your actual local time.
+      </div>
+
+      <div className="field" style={{ marginBottom: '0.75rem' }}>
+        <label>Country (optional)</label>
+        <input
+          type="text"
+          value={value.country ?? ''}
+          placeholder="e.g., USA"
+          onChange={(e) => onChange({ ...value, country: e.target.value || null })}
+        />
+        <span className="stat-sub" style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.125rem' }}>
+          Informational. Surfaces in the URSA agent's session context.
+        </span>
+      </div>
+
+      <RadioRow
+        label="Clock-shift mode"
+        value={value.mode}
+        options={[
+          { value: 'none', label: "Device matches local time (no shift)" },
+          { value: 'auto', label: "Device on fixed offset (DST-aware)" },
+          { value: 'static', label: "Manual offset (escape hatch)" },
+        ]}
+        onChange={(v) => onChange({ ...value, mode: v as DeviceClock['mode'] })}
+      />
+
+      {value.mode === 'auto' && (
+        <div className="field" style={{ marginBottom: '0.75rem' }}>
+          <label>Device UTC offset</label>
+          <select
+            value={value.device_utc_offset_minutes ?? ''}
+            onChange={(e) => onChange({
+              ...value,
+              device_utc_offset_minutes: e.target.value === '' ? null : Number(e.target.value),
+            })}
+          >
+            <option value="">— Pick the offset your device is set to —</option>
+            {UTC_OFFSET_OPTIONS.map((o) => (
+              <option key={o.minutes} value={o.minutes}>{o.label}</option>
+            ))}
+          </select>
+          <span className="stat-sub" style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.125rem' }}>
+            Set this to whatever standard-time offset your device is on (e.g., UTC-5
+            for US Eastern Standard). URSA computes the DST shift automatically
+            per-night using your browser's local time zone.
+          </span>
+        </div>
+      )}
+
+      {value.mode === 'static' && (
+        <div className="field" style={{ marginBottom: '0.75rem' }}>
+          <label>Manual offset (minutes)</label>
+          <input
+            type="number"
+            step={15}
+            value={value.manual_offset_minutes}
+            onChange={(e) => onChange({
+              ...value,
+              manual_offset_minutes: Number(e.target.value) || 0,
+            })}
+          />
+          <span className="stat-sub" style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.125rem' }}>
+            Every displayed timestamp is shifted by this many minutes.
+            Positive = forward (e.g., +60 if your device is one hour behind
+            your local time year-round).
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// Common UTC offsets in 30-minute increments, sufficient for most
+// real-world timezones. The label uses the abbreviated common name
+// when one exists; the value is minutes from UTC.
+const UTC_OFFSET_OPTIONS: { minutes: number; label: string }[] = [
+  { minutes: -720, label: 'UTC-12:00' },
+  { minutes: -660, label: 'UTC-11:00' },
+  { minutes: -600, label: 'UTC-10:00 (HST)' },
+  { minutes: -540, label: 'UTC-9:00 (AKST)' },
+  { minutes: -480, label: 'UTC-8:00 (PST)' },
+  { minutes: -420, label: 'UTC-7:00 (MST)' },
+  { minutes: -360, label: 'UTC-6:00 (CST)' },
+  { minutes: -300, label: 'UTC-5:00 (EST)' },
+  { minutes: -240, label: 'UTC-4:00 (AST)' },
+  { minutes: -180, label: 'UTC-3:00' },
+  { minutes: -120, label: 'UTC-2:00' },
+  { minutes: -60, label: 'UTC-1:00' },
+  { minutes: 0, label: 'UTC' },
+  { minutes: 60, label: 'UTC+1:00 (CET)' },
+  { minutes: 120, label: 'UTC+2:00 (EET)' },
+  { minutes: 180, label: 'UTC+3:00' },
+  { minutes: 240, label: 'UTC+4:00' },
+  { minutes: 300, label: 'UTC+5:00' },
+  { minutes: 330, label: 'UTC+5:30 (IST)' },
+  { minutes: 360, label: 'UTC+6:00' },
+  { minutes: 420, label: 'UTC+7:00' },
+  { minutes: 480, label: 'UTC+8:00 (CST)' },
+  { minutes: 540, label: 'UTC+9:00 (JST)' },
+  { minutes: 600, label: 'UTC+10:00 (AEST)' },
+  { minutes: 660, label: 'UTC+11:00' },
+  { minutes: 720, label: 'UTC+12:00 (NZST)' },
+];
 
 
 // --- Clinical tab ---------------------------------------------------------

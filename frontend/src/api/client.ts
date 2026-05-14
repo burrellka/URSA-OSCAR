@@ -2,7 +2,7 @@
 // Raw `fetch()` per ADR-001 (no TanStack Query) — small surface, single user.
 
 import type {
-  ImportLogEntry,
+  ImportJob,
   ManualLogEntry,
   ManualLogType,
   NightlyEvent,
@@ -110,12 +110,24 @@ export const api = {
     return { date: resp.date, series: out };
   },
 
+  // 0.8.0 — /imports now enqueues asynchronously. Returns the
+  // ImportJob (status='queued'); poll getImportJob until the worker
+  // completes. listActiveImportJobs powers the Import page polling.
   triggerImport: (source_path: string, force = false) =>
-    request<ImportLogEntry>(
+    request<ImportJob>(
       `${BASE}/imports`,
       { method: 'POST', body: JSON.stringify({ source_path }) },
       { force: force ? 'true' : undefined },
     ),
+
+  getImportJob: (job_id: number) =>
+    request<ImportJob>(`${BASE}/imports/jobs/${job_id}`),
+
+  listImportJobs: (params?: { active_only?: boolean; limit?: number }) =>
+    request<ImportJob[]>(`${BASE}/imports/jobs`, {}, {
+      ...(params?.active_only ? { active_only: 'true' } : {}),
+      ...(params?.limit ? { limit: String(params.limit) } : {}),
+    }),
 
   /** Settings page (Phase 2 polish Item 5). Server-side masking guaranteed. */
   getSystemConfig: () => request<SystemConfig>(`${BASE}/system/config`),
@@ -256,7 +268,9 @@ export const api = {
       fd.append('files', f, path);
       total += f.size;
     }
-    return new Promise<ImportLogEntry>((resolve, reject) => {
+    // 0.8.0 — the endpoint now returns an ImportJob (queued); the worker
+    // processes off-thread. Caller polls getImportJob for the result.
+    return new Promise<ImportJob>((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       const url = force
         ? `${BASE}/imports/upload?force=true`

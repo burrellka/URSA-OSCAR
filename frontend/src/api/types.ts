@@ -101,6 +101,28 @@ export interface ImportLogEntry {
 }
 
 
+// Phase 4 Ticket 2 — async import queue. POST /imports and
+// POST /imports/upload now return an ImportJob instead of blocking
+// to completion; the operator (or the Import page) polls
+// GET /imports/jobs/{id} to await the worker.
+
+export type ImportJobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'orphaned';
+
+export interface ImportJob {
+  id: number;
+  status: ImportJobStatus;
+  source_path: string | null;
+  upload_dir: string | null;
+  force_reimport: boolean;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  /** Serialized ImportLogEntry when status='completed'. */
+  result_json: ImportLogEntry | null;
+  error_message: string | null;
+}
+
+
 // Phase 4 Ticket 1 — sessions table + exclusion. The Daily View binds
 // the Session Information checkbox column to these.
 
@@ -180,7 +202,16 @@ export type ManualLogEntry =
   | SleepEnvironmentLog
   | FreeformLog;
 
-// Mirror of backend/src/ursa_oscar/models/profile.py
+// Mirror of backend/src/ursa_oscar/models/profile.py.
+// Phase 4 Ticket 4 — DeviceClock describes how URSA shifts displayed
+// timestamps to compensate for a CPAP clock that doesn't auto-DST.
+export interface DeviceClock {
+  country: string | null;
+  mode: 'none' | 'auto' | 'static';
+  device_utc_offset_minutes: number | null;
+  manual_offset_minutes: number;
+}
+
 export interface DisplayPreferences {
   display_name: string | null;
   timezone: string;
@@ -188,6 +219,7 @@ export interface DisplayPreferences {
   pressure_unit: 'cmH2O' | 'hPa';
   temperature_unit: 'C' | 'F';
   theme: 'light' | 'dark' | 'auto';
+  device_clock: DeviceClock;
 }
 
 export interface Diagnosis {
