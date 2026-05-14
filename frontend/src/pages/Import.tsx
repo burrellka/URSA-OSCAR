@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
+import { Upload as UploadIcon } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { ImportLogEntry, SkippedNight } from '../api/types';
 
@@ -7,6 +8,10 @@ export default function ImportPage() {
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<ImportLogEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Phase 3 Item 2 — folder upload UI state.
+  const [uploadProgress, setUploadProgress] = useState<{ sent: number; total: number } | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
 
   async function go() {
     setRunning(true);
@@ -23,6 +28,33 @@ export default function ImportPage() {
       }
     } finally {
       setRunning(false);
+    }
+  }
+
+  async function uploadFolder(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setRunning(true);
+    setError(null);
+    setResult(null);
+    setUploadProgress({ sent: 0, total: 0 });
+    try {
+      const r = await api.uploadFolder(
+        Array.from(files),
+        (sent, total) => setUploadProgress({ sent, total }),
+      );
+      setResult(r);
+    } catch (e2) {
+      if (e2 instanceof ApiError) {
+        setError(`${e2.message}${e2.body ? ` — ${JSON.stringify(e2.body)}` : ''}`);
+      } else {
+        setError(String(e2));
+      }
+    } finally {
+      setRunning(false);
+      setUploadProgress(null);
+      // Reset input so the same folder can be re-picked.
+      if (folderInputRef.current) folderInputRef.current.value = '';
     }
   }
 
@@ -51,6 +83,67 @@ export default function ImportPage() {
         <button className="btn-primary" onClick={go} disabled={running}>
           {running ? 'Importing…' : 'Start import'}
         </button>
+
+        {/* Phase 3 Item 2 — folder upload alternative. */}
+        <div style={{ marginTop: '1.25rem', paddingTop: '1rem', borderTop: '1px solid var(--border-color)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--text-muted)', fontSize: '0.8125rem', marginBottom: '0.5rem' }}>
+            <span style={{ flex: 1, height: 1, background: 'var(--border-color)' }} />
+            <span>OR</span>
+            <span style={{ flex: 1, height: 1, background: 'var(--border-color)' }} />
+          </div>
+          <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem' }}>
+            Upload SD card folder from this computer
+            <br />
+            <span className="stat-sub" style={{ color: 'var(--text-muted)' }}>
+              Pick the SD card root or a DATALOG folder. The browser uploads it to the API container;
+              the same importer runs against the uploaded copy. Only <code>.edf / .crc / .json / .jnl</code>
+              files under 10 MB each are accepted.
+            </span>
+          </label>
+          <input
+            ref={folderInputRef}
+            type="file"
+            // @ts-expect-error — webkitdirectory + directory are non-standard but
+            // widely supported (Chrome, Edge, Safari). Type defs don't include them.
+            webkitdirectory=""
+            directory=""
+            multiple
+            onChange={uploadFolder}
+            disabled={running}
+            style={{ display: 'none' }}
+            id="ursa-folder-upload-input"
+          />
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => folderInputRef.current?.click()}
+            disabled={running}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}
+          >
+            <UploadIcon size={14} />
+            {running && uploadProgress ? 'Uploading…' : 'Choose folder…'}
+          </button>
+          {uploadProgress && uploadProgress.total > 0 && (
+            <div style={{ marginTop: '0.5rem', maxWidth: '24rem' }}>
+              <div style={{
+                height: '6px', background: 'var(--bg-secondary)',
+                borderRadius: '3px', overflow: 'hidden',
+              }}>
+                <div style={{
+                  width: `${(uploadProgress.sent / uploadProgress.total) * 100}%`,
+                  height: '100%',
+                  background: 'var(--accent-primary)',
+                  transition: 'width 100ms linear',
+                }} />
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', fontVariantNumeric: 'tabular-nums' }}>
+                {(uploadProgress.sent / 1024 / 1024).toFixed(1)} MB /
+                {' '}{(uploadProgress.total / 1024 / 1024).toFixed(1)} MB
+                {' '}({Math.round((uploadProgress.sent / uploadProgress.total) * 100)}%)
+              </div>
+            </div>
+          )}
+        </div>
 
         {error && (
           <div className="error-banner" style={{ marginTop: '1rem' }}>

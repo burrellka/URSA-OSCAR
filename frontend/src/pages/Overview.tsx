@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Download } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { NightlySummary } from '../api/types';
 import { formatAhi, formatMinutesAsHM } from '../lib/format';
@@ -27,20 +28,45 @@ export default function Overview() {
   const totalSessions = nights.reduce((sum, n) => sum + (n.session_count ?? 0), 0);
   const totalMinutes = nights.reduce((sum, n) => sum + (n.total_time_minutes ?? 0), 0);
 
+  const earliest = sortedDesc.length > 0 ? sortedDesc[sortedDesc.length - 1].date : '';
+  const latestDate = sortedDesc.length > 0 ? sortedDesc[0].date : '';
+  const [showExportModal, setShowExportModal] = useState(false);
+
   return (
     <div>
-      <div className="page-header" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: '0.125rem' }}>
-        <h1 className="page-title" style={{ marginBottom: 0 }}>URSA-OSCAR</h1>
-        <div
-          style={{
-            fontSize: '0.875rem',
-            color: 'var(--text-muted)',
-            fontWeight: 400,
-          }}
-        >
-          Unified Rest &amp; Somatic Analytics — built on OSCAR&rsquo;s analytics core
+      <div className="page-header" style={{ alignItems: 'flex-start' }}>
+        <div style={{ flexDirection: 'column', display: 'flex', gap: '0.125rem' }}>
+          <h1 className="page-title" style={{ marginBottom: 0 }}>URSA-OSCAR</h1>
+          <div
+            style={{
+              fontSize: '0.875rem',
+              color: 'var(--text-muted)',
+              fontWeight: 400,
+            }}
+          >
+            Unified Rest &amp; Somatic Analytics — built on OSCAR&rsquo;s analytics core
+          </div>
         </div>
+        {nights.length > 0 && (
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={() => setShowExportModal(true)}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}
+          >
+            <Download size={14} />
+            Export range
+          </button>
+        )}
       </div>
+
+      {showExportModal && (
+        <ExportRangeModal
+          earliest={earliest}
+          latest={latestDate}
+          onClose={() => setShowExportModal(false)}
+        />
+      )}
 
       {loading && <div className="loading">Loading nights…</div>}
       {error && <div className="error-banner">{error}</div>}
@@ -91,6 +117,67 @@ export default function Overview() {
     </div>
   );
 }
+
+function ExportRangeModal({ earliest, latest, onClose }: {
+  earliest: string; latest: string; onClose: () => void;
+}) {
+  const [start, setStart] = useState(earliest);
+  const [end, setEnd] = useState(latest);
+
+  function downloadCsv() {
+    if (!start || !end) return;
+    // Direct navigation — browser triggers download via Content-Disposition.
+    window.location.href = api.bulkExportUrl(start, end);
+    onClose();
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)',
+        zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: 'white', borderRadius: '8px', padding: '1.5rem',
+          width: 'min(28rem, 92vw)', boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+        }}
+      >
+        <h2 style={{ fontSize: '1.125rem', fontWeight: 600, marginTop: 0, marginBottom: '0.75rem' }}>
+          Export range to CSV
+        </h2>
+        <p style={{ marginBottom: '0.75rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+          One row per night, OSCAR-compatible column shape. Downloads directly to your browser.
+        </p>
+        <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1rem' }}>
+          <div className="field" style={{ flex: 1 }}>
+            <label>Start date</label>
+            <input type="date" value={start} onChange={(e) => setStart(e.target.value)} />
+          </div>
+          <div className="field" style={{ flex: 1 }}>
+            <label>End date</label>
+            <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} />
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+          <button type="button" className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={downloadCsv}
+            disabled={!start || !end || start > end}
+          >
+            Download CSV
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
