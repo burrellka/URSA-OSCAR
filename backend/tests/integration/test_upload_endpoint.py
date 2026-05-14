@@ -75,6 +75,16 @@ def test_sanitize_accepts_realistic_paths(raw: str, expected_rel: str):
     ("IndexerVolumeGuid", "bad_suffix"),
     ("Thumbs.db", "bad_suffix"),
     ("something.weird", "bad_suffix"),
+    # OS-junk segment filter — these would otherwise sneak through
+    # because their suffix IS in the allowlist (.dat for WPSettings,
+    # .json for various OS files).
+    ("SDcard/System Volume Information/WPSettings.dat", "os_junk"),
+    ("SDcard/System Volume Information/IndexerVolumeGuid", "os_junk"),
+    ("SDcard/$RECYCLE.BIN/info.json", "os_junk"),
+    ("SDcard/.Trashes/file.edf", "os_junk"),
+    ("SDcard/__MACOSX/STR.edf", "os_junk"),
+    # Case-insensitive blocklist matching.
+    ("sdcard/system volume information/WPSettings.dat", "os_junk"),
 ])
 def test_sanitize_rejects_with_reason(raw: str, reason: str):
     rel, got_reason = _sanitize_relpath(raw)
@@ -219,6 +229,36 @@ def test_upload_real_sd_card_backslash_filenames(api_client, real_sd_files):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["nights_imported"] > 0
+
+
+def test_upload_real_sd_card_drops_os_junk(api_client, real_sd_files, tmp_path):
+    """End-to-end: real SD-card payload must NOT carry the Windows-created
+    ``System Volume Information/`` files into the tempdir. The full upload
+    should succeed AND the rejected tally for ``os_junk`` should be
+    non-zero (the snapshot contains 2 such files: WPSettings.dat and
+    IndexerVolumeGuid).
+
+    We can't see the rejection counts directly because the 200 response
+    only returns the ImportLogEntry, so we assert indirectly: that the
+    OS-junk paths in the input ARE rejected at sanitize time. The
+    e2e success of the upload (other tests) is independent evidence
+    that the rest of the payload still gets through.
+    """
+    os_junk_paths = [
+        rel for rel, _ in real_sd_files
+        if "system volume information" in rel.lower()
+        or "$recycle.bin" in rel.lower()
+    ]
+    # The snapshot must contain at least one OS-junk file for this test
+    # to be meaningful; otherwise it'd silently no-op.
+    assert os_junk_paths, (
+        f"snapshot at {REAL_SD_CARD} contains no OS-junk files — test would no-op. "
+        f"Confirm the snapshot was taken with the volume mounted on Windows."
+    )
+    for path in os_junk_paths:
+        rel, reason = _sanitize_relpath(path)
+        assert rel is None, f"expected REJECT for OS-junk path {path!r}, got {rel}"
+        assert reason == "os_junk", f"expected reason=os_junk for {path!r}, got {reason}"
 
 
 def test_upload_empty_payload_returns_400_with_diagnostics(api_client):

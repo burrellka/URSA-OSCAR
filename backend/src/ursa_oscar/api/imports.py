@@ -34,6 +34,25 @@ router = APIRouter(prefix="/api/v1", tags=["imports"])
 # defense against a user accidentally selecting their downloads folder
 # instead of the SD card.
 _ALLOWED_SUFFIXES = {".edf", ".crc", ".json", ".jnl", ".tgt", ".dat"}
+
+# OS-level junk that ends up on the SD card when the operator plugs it
+# into a Windows / macOS machine. None of these belong in the importer
+# — explicitly drop any file whose path contains one of these as a
+# segment so the per-file suffix check doesn't accidentally pull in
+# `System Volume Information/WPSettings.dat` (matches the .dat
+# allowlist but is pure OS noise). Match case-insensitively.
+_OS_JUNK_SEGMENTS = frozenset(s.lower() for s in {
+    "System Volume Information",   # Windows — restore points / indexer
+    "$RECYCLE.BIN",                # Windows recycle bin
+    "RECYCLER",                    # Pre-Vista Windows recycle bin
+    ".Trashes",                    # macOS user trash
+    ".Spotlight-V100",             # macOS Spotlight metadata
+    ".fseventsd",                  # macOS file events
+    "__MACOSX",                    # macOS zip-archive artifacts
+    ".DocumentRevisions-V100",     # macOS document versions
+    ".TemporaryItems",             # macOS scratch
+})
+
 # 10 MB per file. The big files are the 25 Hz BRP flow waveforms,
 # typically 1-3 MB. 10 MB gives headroom without enabling abuse.
 _MAX_FILE_SIZE_MB = 10
@@ -130,6 +149,7 @@ async def upload_folder_and_import(
         "empty_name": 0,
         "traversal": 0,
         "absolute": 0,
+        "os_junk": 0,
         "bad_suffix": 0,
         "too_big": 0,
     }
@@ -225,7 +245,7 @@ def _sanitize_relpath(name: str) -> _RelpathResult:
 
     Returns ``(Path, None)`` on success or ``(None, reason)`` if the
     file should be dropped, where ``reason`` is one of: ``empty_name``,
-    ``traversal``, ``absolute``, ``bad_suffix``.
+    ``traversal``, ``absolute``, ``os_junk``, ``bad_suffix``.
 
     Normalization rules:
       - Convert backslashes to forward slashes. Different browsers send
@@ -238,6 +258,12 @@ def _sanitize_relpath(name: str) -> _RelpathResult:
       - Strip leading slashes (absolute-path leaks become relative).
       - Reject any segment equal to ``..`` (path traversal).
       - Reject any path that's still absolute after stripping.
+      - Reject any path containing a segment from
+        ``_OS_JUNK_SEGMENTS`` — Windows/macOS shell artefacts that
+        get auto-created on the SD card when the operator plugs it
+        into a desktop machine. They have nothing to do with ResMed
+        data and would only waste tempdir bytes (and worse, slip
+        through the suffix check via the ``.dat`` allowlist).
       - Require the file's suffix matches ``_ALLOWED_SUFFIXES``.
     """
     name = name.replace("\\", "/")
@@ -250,6 +276,11 @@ def _sanitize_relpath(name: str) -> _RelpathResult:
     parts = name.split("/")
     if any(p == ".." for p in parts):
         return None, "traversal"
+    # OS junk reject — checked BEFORE suffix so the rejection reason
+    # is informative ("os_junk" vs "bad_suffix") for any file living
+    # under one of these segments, even if its own suffix is allowlisted.
+    if any(p.lower() in _OS_JUNK_SEGMENTS for p in parts):
+        return None, "os_junk"
     rel = Path(name)
     if rel.is_absolute():
         return None, "absolute"
