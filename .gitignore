@@ -28,6 +28,14 @@ backend/tests/regression/fixtures/nights/oscar-reference/
 backend/tests/regression/canonical_targets.py
 backend/tests/regression/test_oscar_parity.py
 
+# Local-only SD-card snapshots dropped at the repo root by the operator
+# for ad-hoc importer / upload-endpoint debugging. Never published —
+# this is real CPAP data, plus per-device serial numbers in
+# IDENTIFICATION.* files.
+/curr sd card/
+/sd card/
+/sd-card/
+
 # Per-instance config (Phase 3) — vocabularies and user profile live
 # on the mounted volume, never in git. Repo ships *.community-default
 # stubs only (packaged inside backend/src/ursa_oscar/data/).
