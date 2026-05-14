@@ -31,16 +31,25 @@ def get_timeseries(
         {
           "date": "YYYY-MM-DD",
           "series": {
-             "pressure":   {"timestamps": [epoch_ms, ...], "values": [...], "secondary": [...] | null},
+             "pressure":   {"timestamps": ["YYYY-MM-DDTHH:MM:SS", ...], "values": [...], "secondary": [...] | null},
              "leak":       {"timestamps": [...], "values": [...], "secondary": null},
              ...
           }
         }
 
-    Timestamps are epoch milliseconds (uPlot-friendly). The pressure series
-    returns a `secondary` array carrying EPAP values aligned 1:1 with the
-    primary pressure samples — the Daily View renders Pressure + EPAP as two
-    lines on a single track.
+    Timestamps are naive ISO 8601 strings — no timezone suffix. Critical:
+    ResMed devices record WALL-CLOCK LOCAL time with no notion of timezone.
+    Returning epoch ms via Python's ``.timestamp()`` would treat the naive
+    datetime as the running process's tz (UTC inside Docker), and the
+    browser would then re-shift by the user's offset to display, producing
+    a value off by the user's UTC offset (the 0.7.0 → 0.7.1 fix). Naive
+    ISO strings parsed by JS ``new Date()`` interpret as local time, which
+    matches the recording's wall-clock value and aligns with the events
+    endpoint (which has always used ISO strings via Pydantic).
+
+    The pressure series returns a `secondary` array carrying EPAP values
+    aligned 1:1 with the primary pressure samples — the Daily View
+    renders Pressure + EPAP as two lines on a single track.
     """
     db = request.app.state.db
 
@@ -74,7 +83,10 @@ def get_timeseries(
             out[s] = {"timestamps": [], "values": [], "secondary": None}
             continue
         # rows: (timestamp, value [, secondary])
-        timestamps = [int(r[0].timestamp() * 1000) for r in rows]
+        # ISO strings (naive, no Z) — see endpoint docstring for the
+        # timezone rationale. JS new Date(iso) parses as local time,
+        # which matches the ResMed device's wall-clock recording.
+        timestamps = [r[0].isoformat() for r in rows]
         values = [r[1] for r in rows]
         secondary = None
         if len(rows[0]) == 3:

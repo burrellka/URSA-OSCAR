@@ -74,7 +74,17 @@ export default function TimeSeriesChart({
       width: containerRef.current.clientWidth,
       height,
       cursor: {
-        sync: syncKey ? { key: syncKey, setSeries: true } : undefined,
+        // 0.7.1 legend fix — `setSeries: true` told uPlot to broadcast
+        // the focused series-index along with the cursor sync. Daily View's
+        // Pressure chart has 2 series (Pressure + EPAP) while every other
+        // track has 1 — so a sync from Pressure asking "focus series 2"
+        // landed on charts that don't have a series 2, and uPlot's
+        // out-of-bounds setSeries call wiped the static legend
+        // rendering on the receiving charts (didn't come back without a
+        // page refresh). Dropping setSeries keeps cursor-position sync
+        // (the crosshair still moves across all charts in lockstep)
+        // without broadcasting the focused-series-index.
+        sync: syncKey ? { key: syncKey } : undefined,
         focus: { prox: 30 },
       },
       scales: {

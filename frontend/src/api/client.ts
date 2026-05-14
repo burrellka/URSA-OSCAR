@@ -84,17 +84,25 @@ export const api = {
     request<NightlyEvent[]>(`${BASE}/events`, {}, { date, event_type: eventTypes }),
 
   /**
-   * Fetch one or more waveform channels for a single night. Server returns
-   * epoch-ms timestamps; this client converts to epoch-seconds for uPlot.
+   * Fetch one or more waveform channels for a single night.
+   *
+   * 0.7.1 timezone fix — server now returns naive ISO 8601 strings
+   * (matching the events endpoint's convention). We parse them with
+   * ``new Date(iso)``, which interprets naive ISO as local time —
+   * the right behavior for ResMed devices that record wall-clock with
+   * no timezone awareness. The resulting epoch seconds align with the
+   * events endpoint's local-parsed timestamps + summary.start_time
+   * bounds, so the X axis, the EventRug, and the hover tooltip all
+   * show the recording's wall-clock value.
    */
   getTimeseries: async (date: string, series: string[]) => {
-    type RawSeries = { timestamps: number[]; values: (number | null)[]; secondary: (number | null)[] | null };
+    type RawSeries = { timestamps: string[]; values: (number | null)[]; secondary: (number | null)[] | null };
     type RawResp = { date: string; series: Record<string, RawSeries> };
     const resp = await request<RawResp>(`${BASE}/timeseries/${date}`, {}, { series });
     const out: Record<string, { timestamps: number[]; values: (number | null)[]; secondary: (number | null)[] | null }> = {};
     for (const [k, s] of Object.entries(resp.series)) {
       out[k] = {
-        timestamps: s.timestamps.map((ms) => ms / 1000),
+        timestamps: s.timestamps.map((iso) => new Date(iso).getTime() / 1000),
         values: s.values,
         secondary: s.secondary,
       };
