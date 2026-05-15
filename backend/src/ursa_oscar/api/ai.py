@@ -295,9 +295,15 @@ async def chat(req: ChatRequest, request: Request):
         custom_template=cfg.custom_system_prompt,
     )
 
-    # API base URL for in-process tool execution. The proxy is in the
-    # API container itself, so loopback works.
-    api_base_url = "http://127.0.0.1:8000"
+    # API base URL for in-process tool execution. The chat endpoint
+    # runs inside the API process; we want loopback (don't round-trip
+    # through the public URL / web proxy). Build the URL from the
+    # ASGI server scope so we hit whatever port uvicorn actually
+    # bound to — works in production (8000) AND in tests (random
+    # free port). Falls back to 8000 if the scope is missing the
+    # server key (defensive).
+    server = request.scope.get("server") or ("127.0.0.1", 8000)
+    api_base_url = f"http://{server[0]}:{server[1]}"
 
     async def event_generator():
         messages = list(req.messages)
