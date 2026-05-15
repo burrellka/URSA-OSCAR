@@ -323,10 +323,27 @@ async def chat(req: ChatRequest, request: Request):
         # possible tool executions. Typical use: 1-3 loops for a multi-
         # tool query. Cap at 8 to prevent runaway loops on a misbehaving
         # model (Llama 3.2 3B has been known to chain-call indefinitely).
+        #
+        # 0.9.6 fix — buffer the adapter's per-turn ``complete`` event
+        # instead of forwarding it. Adapters emit ``complete`` at the end
+        # of every chat() call, including the turn where
+        # ``stop_reason='tool_use'`` (signaling "I want to call tools,
+        # take over"). If we forwarded those intermediate completes the
+        # client's for-await loop would break on the FIRST one — before
+        # the tool ran, before the second adapter turn that produces the
+        # assistant text. Tool chip ends up stuck on "running", no text
+        # response, server keeps streaming into a closed consumer.
+        #
+        # The single visible ``complete`` event the client sees is the
+        # one we emit at the very end of THIS function (or never — if the
+        # body just ends after the final text events, the for-await loop
+        # exits naturally, which the client also handles correctly).
+        final_complete: AiStreamEvent | None = None
         for loop_n in range(8):
             pending_tool_calls: list[AiToolCall] = []
             saw_text = False
             stop_reason: str | None = None
+            errored = False
 
             try:
                 # 0.9.4 — interleave keepalive comments between adapter
@@ -348,6 +365,20 @@ async def chat(req: ChatRequest, request: Request):
                         yield line
                         continue
                     event: AiStreamEvent = line
+
+                    if event.event_type == "complete":
+                        # Buffer — only the LAST loop's complete (or none)
+                        # gets sent to the client.
+                        stop_reason = event.payload.get("stop_reason")
+                        final_complete = event
+                        continue
+
+                    if event.event_type == "error":
+                        # Adapter errored — surface immediately and stop.
+                        yield _sse_pack(event)
+                        errored = True
+                        return
+
                     yield _sse_pack(event)
 
                     if event.event_type == "text":
@@ -360,17 +391,19 @@ async def chat(req: ChatRequest, request: Request):
                                 arguments=event.payload["arguments"],
                             ),
                         )
-                    elif event.event_type == "complete":
-                        stop_reason = event.payload.get("stop_reason")
-                    elif event.event_type == "error":
-                        # Adapter errored — surface and stop.
-                        return
             except asyncio.CancelledError:
                 logger.info("ai/chat: client disconnected; aborting stream")
                 raise
 
+            if errored:
+                return
+
             if not pending_tool_calls:
                 # No more tools requested — the conversation is done.
+                # Emit the captured final complete now (if any) so the
+                # client gets a clean end-of-stream signal.
+                if final_complete is not None:
+                    yield _sse_pack(final_complete)
                 return
 
             # Insert the assistant's tool-call turn into the conversation

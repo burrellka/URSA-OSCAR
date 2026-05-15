@@ -499,3 +499,204 @@ def test_chat_rejected_when_disabled(ai_test_client):
     })
     assert r.status_code == 400
     assert "disabled" in r.json()["detail"].lower()
+
+
+# -------------------------------------------------------------------------
+# /ai/chat — SSE event_generator regression coverage.
+#
+# These tests exercise the server-side event-generator without a live LLM
+# or live tool router. They use:
+#   - a fake ProviderAdapter that yields a scripted sequence of events
+#   - a monkeypatched execute_tool that returns canned envelopes
+# so we can lock down the wire-protocol contract: exactly ONE ``complete``
+# event reaches the client, and only after all tool loops have finished.
+# -------------------------------------------------------------------------
+
+
+class _ScriptedAdapter:
+    """Test double for a ProviderAdapter. ``script`` is a list of lists:
+    one inner list per chat() call, each containing the events to emit
+    on that call. The adapter advances through the outer list as the
+    server makes repeat calls inside the tool loop."""
+
+    def __init__(self, script):
+        self._script = list(script)
+        self._call_idx = 0
+
+    async def chat(self, messages, tools, system_prompt):
+        events = self._script[self._call_idx]
+        self._call_idx += 1
+        for ev in events:
+            yield ev
+
+
+def _parse_sse_events(body: bytes) -> list[dict]:
+    """Pull JSON payloads out of every ``data:`` frame in an SSE body.
+    Skips comments and blank frames. The test asserts on this list."""
+    out = []
+    for frame in body.replace(b"\r\n\r\n", b"\n\n").split(b"\n\n"):
+        frame = frame.strip()
+        if not frame or frame.startswith(b":"):
+            continue
+        if not frame.startswith(b"data:"):
+            continue
+        payload = frame[5:].strip()
+        if not payload:
+            continue
+        out.append(json.loads(payload.decode("utf-8")))
+    return out
+
+
+@pytest.fixture
+def chat_ready_client(ai_test_client):
+    """ai_test_client with the AI assistant enabled + a Claude key
+    stashed, so /ai/chat passes its pre-flight checks."""
+    r = ai_test_client.post("/api/v1/ai/config", json={
+        "enabled": True,
+        "provider_id": "claude",
+        "model": "claude-sonnet-4-5-20250929",
+        "api_key": "sk-ant-test-fake",
+    })
+    assert r.status_code == 200, r.text
+    return ai_test_client
+
+
+def test_chat_suppresses_intermediate_complete_during_tool_loop(
+    chat_ready_client, monkeypatch,
+):
+    """Regression for 0.9.6 bug — the adapter emits ``complete`` at the
+    end of every chat() call, including the turn where
+    ``stop_reason='tool_use'`` (signaling "I want to call tools").
+
+    The 0.9.5-and-earlier event_generator forwarded those intermediate
+    completes straight to the SSE stream. The client's for-await loop
+    breaks on the FIRST ``complete``, so the user saw:
+      - tool chip stuck at "running" (never received tool_result)
+      - no assistant text (text events come on the 2nd adapter call)
+      - timer frozen at ~2.5s (when the first complete arrived)
+
+    The fix: buffer the adapter's complete events and only emit a
+    single final complete after all tool loops have wrapped. This test
+    locks that down by asserting exactly ONE ``complete`` event in the
+    response body, and that it carries the FINAL stop_reason."""
+    from ursa_oscar.ai_proxy.providers.base import AiStreamEvent
+    import ursa_oscar.api.ai as ai_module
+
+    # Two-call script: first call requests a tool, second call returns
+    # the assistant's final answer + end_turn.
+    script = [
+        [
+            AiStreamEvent(
+                event_type="tool_call_start",
+                payload={"id": "tu_01", "name": "get_nightly_summary"},
+            ),
+            AiStreamEvent(
+                event_type="tool_call_complete",
+                payload={
+                    "id": "tu_01",
+                    "name": "get_nightly_summary",
+                    "arguments": {"date": "2026-05-13"},
+                },
+            ),
+            AiStreamEvent(
+                event_type="complete",
+                payload={"stop_reason": "tool_use", "usage": {}},
+            ),
+        ],
+        [
+            AiStreamEvent(
+                event_type="text",
+                payload={"text": "Your AHI was 3.94. "},
+            ),
+            AiStreamEvent(
+                event_type="text",
+                payload={"text": "Sleep duration was 7h 04m."},
+            ),
+            AiStreamEvent(
+                event_type="complete",
+                payload={"stop_reason": "end_turn", "usage": {"output_tokens": 42}},
+            ),
+        ],
+    ]
+
+    monkeypatch.setattr(
+        ai_module,
+        "build_adapter",
+        lambda *_a, **_kw: _ScriptedAdapter(script),
+    )
+
+    async def fake_execute_tool(name, args, api_base_url=None):
+        return {
+            "ok": True,
+            "data": {"date": "2026-05-13", "total_ahi": 3.94, "session_count": 2},
+        }
+
+    monkeypatch.setattr(ai_module, "execute_tool", fake_execute_tool)
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "How was my sleep on 2026-05-13?"}],
+        "context": {"current_date": "2026-05-13", "include_profile": False},
+    })
+    assert r.status_code == 200, r.text
+    events = _parse_sse_events(r.content)
+
+    # Sequence the client should see, in order:
+    #   tool_call_start, tool_call_complete, tool_result,
+    #   text, text, complete(end_turn)
+    types = [e["event_type"] for e in events]
+    assert types == [
+        "tool_call_start", "tool_call_complete",
+        "tool_result",
+        "text", "text",
+        "complete",
+    ], f"unexpected event sequence: {types}"
+
+    # The ONE complete must be the final one, not the intermediate
+    # tool_use complete.
+    completes = [e for e in events if e["event_type"] == "complete"]
+    assert len(completes) == 1, (
+        f"expected exactly 1 complete event, got {len(completes)} — "
+        "regression: intermediate complete events leaking through "
+        "would cause the client to break early on tool_use turns"
+    )
+    assert completes[0]["payload"]["stop_reason"] == "end_turn"
+
+    # The tool_result must appear BEFORE the assistant's text response —
+    # ordering matters for the UI's tool-chip "running -> complete"
+    # transition.
+    assert types.index("tool_result") < types.index("text")
+
+
+def test_chat_emits_no_complete_when_adapter_errors(
+    chat_ready_client, monkeypatch,
+):
+    """Adapter-error path — an ``error`` event should be forwarded
+    immediately and no ``complete`` should follow it. The client's
+    streamError handler picks up the error message and renders the
+    banner."""
+    from ursa_oscar.ai_proxy.providers.base import AiStreamEvent
+    import ursa_oscar.api.ai as ai_module
+
+    script = [[
+        AiStreamEvent(
+            event_type="error",
+            payload={"message": "fake auth failure", "code": "unauthorized"},
+        ),
+    ]]
+    monkeypatch.setattr(
+        ai_module,
+        "build_adapter",
+        lambda *_a, **_kw: _ScriptedAdapter(script),
+    )
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert r.status_code == 200, r.text
+    events = _parse_sse_events(r.content)
+    types = [e["event_type"] for e in events]
+    assert types == ["error"], (
+        f"expected single error event, got {types} — "
+        "errors must not be followed by a complete"
+    )
+    assert events[0]["payload"]["code"] == "unauthorized"
