@@ -5,6 +5,7 @@ import {
   BarChart3,
   ListChecks,
   Upload,
+  Download,
   TrendingUp,
   ClipboardList,
   User,
@@ -18,6 +19,8 @@ const NAV: Array<{ to: string; label: string; Icon: LucideIcon; end?: boolean }>
   { to: '/statistics', label: 'Statistics', Icon: BarChart3 },
   { to: '/events', label: 'Events', Icon: ListChecks },
   { to: '/import', label: 'Import', Icon: Upload },
+  // 0.9.7 — Export sits next to Import (symmetric data flow).
+  { to: '/export', label: 'Export', Icon: Download },
   { to: '/trends', label: 'Trends', Icon: TrendingUp },
   { to: '/logs', label: 'Manual Logs', Icon: ClipboardList },
   // Phase 3 Item 4B — Profile lives between Manual Logs and Settings.

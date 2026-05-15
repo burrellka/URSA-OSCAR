@@ -301,6 +301,33 @@ export const api = {
   bulkExportUrl: (start_date: string, end_date: string) =>
     `${BASE}/exports?start_date=${start_date}&end_date=${end_date}&format=csv`,
 
+  // ===================================================================
+  // 0.9.7 — OSCAR-compatible CSV export endpoints.
+  // ===================================================================
+
+  /** Build a URL the browser can navigate to to download an OSCAR-shape
+   *  CSV. Optional date range; omit both for the most-recent-day default. */
+  oscarExportUrl: (
+    exportType: 'summary' | 'sessions' | 'daily',
+    range?: { start_date: string; end_date: string },
+  ) => {
+    const path = `${BASE}/exports/oscar/${exportType}.csv`;
+    if (!range) return path;
+    return `${path}?start_date=${range.start_date}&end_date=${range.end_date}`;
+  },
+
+  /** Write the OSCAR-shape CSV to the API container's EXPORTS_PATH on
+   *  disk. Returns the saved filename + container path + byte count. */
+  oscarServerExport: (req: {
+    export_type: 'summary' | 'sessions' | 'daily';
+    start_date?: string;
+    end_date?: string;
+  }) =>
+    request<{ filename: string; path: string; bytes: number; rows: number }>(
+      `${BASE}/exports/oscar/server`,
+      { method: 'POST', body: JSON.stringify(req) },
+    ),
+
   // =====================================================================
   // Phase 5 — AI proxy. Five endpoints; the chat path uses SSE not fetch.
   // =====================================================================

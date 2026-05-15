@@ -14,8 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from .ai_proxy.config_store import ConfigStore as AiConfigStore
 from .ai_proxy.secrets import SecretStore, resolve_secret_key
 from .api import (
-    ai, analytics, events, exports, health, imports, manual_logs, nights,
-    profile, system, timeseries, vocab,
+    ai, analytics, events, exports, exports_oscar, health, imports,
+    manual_logs, nights, profile, system, timeseries, vocab,
 )
 from .config import get_settings
 from .services.import_worker import ImportWorker
@@ -109,6 +109,7 @@ def create_app() -> FastAPI:
     app.include_router(vocab.router)
     app.include_router(manual_logs.router)
     app.include_router(exports.router)
+    app.include_router(exports_oscar.router)
     app.include_router(system.router)
     app.include_router(profile.router)
     app.include_router(analytics.router)
