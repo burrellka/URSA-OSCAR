@@ -701,6 +701,64 @@ pytest tests/smoke/ -v -s
 
 The project doesn't enforce a coverage percentage — pragmatic test-when-it-matters policy. New analytical math should have at least one canonical-target test; new endpoints should have at least one TestClient round-trip; new repositories should have at least one set+get sanity test. Locking down bugs the operator hits in production is the #1 priority — every bug fix lands with a regression test.
 
+### The scripted-adapter pattern (for SSE-streaming endpoints with multi-turn loops)
+
+The AI proxy's `/api/v1/ai/chat` endpoint runs a server-side tool-execution loop: stream events from a provider adapter → execute requested tools → feed results back → continue. This control flow has a wire-protocol contract that a unit test against the adapter alone can't verify and a live-LLM smoke test can only verify at the cost of API credits + cross-internet latency.
+
+The scripted-adapter pattern, introduced in Phase 5.5, gives full-loop coverage in <5s with no credentials. It lives in `backend/tests/integration/test_ai_proxy.py` and consists of three pieces:
+
+**1. `_ScriptedAdapter` test double.** A drop-in replacement for `ClaudeAdapter` / `OpenAiCompatAdapter` whose `chat()` async-iterates a pre-scripted list of `AiStreamEvent` objects. The script is a list-of-lists: outer dimension is "which chat() call within the multi-turn loop"; inner dimension is "events emitted during that call". The adapter advances through the outer list automatically, so a multi-tool comparison query just builds a 3-element outer list (turn 1 = call tool A, turn 2 = call tool B, turn 3 = render prose).
+
+**2. `_setup_chat(monkeypatch, script, tool_results=...)` helper.** Wires the scripted adapter and a fake `execute_tool` into the `ursa_oscar.api.ai` module via monkeypatch. `tool_results` can be a list (FIFO across all tool calls), a dict keyed by tool name, or `None` for the trivial `{ok: True, data: {}}` default.
+
+**3. `_parse_sse_events(body)` helper.** Pulls the JSON payloads out of every `data:` frame in the `Content: text/event-stream` response body, skipping comments and blank frames. Returns a list of dicts the test asserts on.
+
+Together they make a typical test ~30 lines:
+
+```python
+def test_chat_correlation_tool_call(chat_ready_client, monkeypatch):
+    script = [
+        [
+            _ai_event("tool_call_start", id="tu_c", name="analyze_correlation"),
+            _ai_event("tool_call_complete", id="tu_c",
+                      name="analyze_correlation",
+                      arguments={"metric_a": "total_ahi", "metric_b": "p95_leak",
+                                 "start_date": "2026-04-15",
+                                 "end_date": "2026-05-15", "lag_days": 0}),
+            _ai_event("complete", stop_reason="tool_use", usage={}),
+        ],
+        [
+            _ai_event("text", text="Weak negative correlation (r=-0.21, n=28)."),
+            _ai_event("complete", stop_reason="end_turn", usage={}),
+        ],
+    ]
+    _setup_chat(monkeypatch, script, tool_results=[
+        {"ok": True, "data": {"pearson_r": -0.21, "n_pairs": 28}},
+    ])
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "Does my AHI correlate with leak?"}],
+    })
+    events = _parse_sse_events(r.content)
+    tcc = next(e for e in events if e["event_type"] == "tool_call_complete")
+    assert tcc["payload"]["arguments"]["metric_a"] == "total_ahi"
+```
+
+**When to use it.** Any change to:
+- `event_generator()` in `backend/src/ursa_oscar/api/ai.py`
+- The multi-turn tool-execution loop's wire-protocol contract
+- Adapter event-shape definitions in `ai_proxy/providers/base.py`
+
+…should be covered by a scripted-adapter test before merge. The 0.9.6 bug (server forwarded the adapter's per-turn `complete` event, breaking client-side for-await early) went out in 0.9.0 specifically because no scripted-adapter coverage of the multi-turn loop existed at that point. The eight tests now in place cover all five acceptance-matrix query classes (Q1 single-tool, Q2 multi-tool comparison, Q3 correlation, Q4 trend, Q5 manual logs) plus the three error paths (tool returns ok=False, adapter errors mid-stream, runaway-tool-loop safety cap).
+
+Run them with:
+
+```bash
+cd backend && pytest tests/integration/test_ai_proxy.py -v -k "scripted or chat_"
+```
+
+Total wall time: <5s. Run them on every PR that touches the chat code path.
+
 ---
 
 ## 9. Building and publishing images
@@ -739,6 +797,35 @@ docker buildx build \
     -f backend/Dockerfile \
     --push .
 ```
+
+### Bumping image versions
+
+URSA-OSCAR runs under **strict version pinning** as of Phase 5.5. The `:latest` tag still exists on Docker Hub (and `build_and_push.ps1` still pushes it for convenience), but no compose file in this repo references `:latest`. Every `image:` line in `infra/docker-compose.yml` and `infra/docker-compose.production.yml` pins to an explicit `X.Y.Z` tag, and operator-deployed composes are expected to do the same.
+
+The full version-bump workflow when shipping a new image:
+
+1. **Pick a version.** Patch bumps for bugfixes (0.9.7 → 0.9.8). Minor bumps for features (0.9.x → 0.10.0). Pre-1.0 is current; major bump comes when Phase 6 closes URSA-OSCAR's feature set.
+
+2. **Build + push the image with both tags.** The build script tags `:VERSION` and `:latest`:
+   ```powershell
+   .\infra\build_and_push.ps1 -Version 0.9.8 -DockerHubUser brain40
+   ```
+
+3. **Update `infra/docker-compose.production.yml`** — change the `image:` line for the bumped container AND the matching `URSA_OSCAR_*_IMAGE_VERSION` env-chip default. Both must move together; the chip is what the Settings page displays and operator confusion erupts whenever they drift.
+
+4. **Update `infra/docker-compose.yml`** — same change, here the version often lives in a `${URSA_OSCAR_*_IMAGE_VERSION:-X.Y.Z}` substitution. Keep the default in sync.
+
+5. **Commit + push to public main.** Production compose is the canonical "what's the current shipped version?" reference; if it shows 0.9.8, that's the current version.
+
+6. **Update the operator's local compose.** Either the operator does this manually (the typical case — the operator owns their Dockge file) or you provide a chat-side snippet they paste. The same two-line bump (image tag + env-chip default) applies.
+
+7. **`docker compose pull && docker compose up -d --force-recreate`** on the operator's host.
+
+8. **Verify version chips on `/settings`** match the new version. If they don't match the deployed image tags, something is wrong and won't be obvious from logs alone.
+
+The "Settings chip drift" anti-pattern caught the operator twice during the 0.9.x patch cycle — they'd bumped the `image:` tag but not the env var, so the Settings page kept reporting the old version. Strict pinning of both halves keeps that from happening.
+
+For experimental local builds where you don't care about the chip accuracy, build with `-SkipPush` and `docker compose up` against a one-off pinned tag (e.g. `:0.9.8-dev1`). Just don't push that tag to production until you've bumped through the full workflow above.
 
 ---
 

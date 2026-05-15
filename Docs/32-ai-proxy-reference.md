@@ -186,6 +186,24 @@ Provider sends `data: {...}\n\n` SSE frames. The adapter parses each, extracts `
 - **Groq** sometimes returns usage as a separate "final" SSE chunk without `choices` — the adapter captures usage from any chunk that has it.
 - **Local LLMs** sometimes omit the `id` on the first `tool_calls` delta — we set it when it arrives and emit `tool_call_start` lazily once we have both `id` and `name`.
 
+### Tool-calling reliability across providers
+
+The adapter contract is identical for every provider, but tool-calling *reliability* — the model's ability to route a user query to the right tool with correctly-formatted arguments — varies sharply. Approximate ranking from URSA-OSCAR Phase 5 acceptance testing:
+
+| Provider / model class | Tool calling | Notes |
+|---|---|---|
+| Claude API (Sonnet 4.5+) | Excellent | Reference implementation. URSA-OSCAR's acceptance matrix uses it. |
+| OpenAI GPT-4o / 4o-mini | Excellent | Equivalent to Claude in practice. |
+| Anthropic Haiku family | Very good | A bit more prone to skipping a tool for chitchat queries. |
+| OpenRouter (with strong backing model) | Inherits backing model's quality | Variable — pick the model carefully. |
+| Groq (Llama 3.1 70B, Mixtral 8x7B) | Good | Fast, decent tool routing. |
+| Local LLM — 32B+ open-weight tool-callers | Good–Very good | Qwen 2.5 32B, Llama 3.3 70B, etc. |
+| Local LLM — 7-14B tool-callers | Moderate | Hermes 3 8B, Qwen 2.5 14B, Mistral Nemo 12B. |
+| Local LLM — <7B models | Poor | Skip tools, hallucinate clinical facts. Plumbing test only. |
+| Gemini 2.0 Flash Exp | Unreliable | Frequent malformed tool-call JSON. Prefer `1.5-flash`. |
+
+For local-LLM selection in particular, see [`Docs/33-operator-setup-guide.md` → Recommended local models](33-operator-setup-guide.md#recommended-local-models) for a hardware-sized recommendations table and the rationale on why model size matters in a clinical context.
+
 ---
 
 ## 5. Provider preset registry

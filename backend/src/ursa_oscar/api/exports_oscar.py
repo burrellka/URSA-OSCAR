@@ -114,6 +114,41 @@ _OSCAR_PRESSURE_COLUMNS: tuple[tuple[str, str | None], ...] = (
     ("99.5% Flow Limit.", None),
 )
 
+# v6 — per-session pressure-stat mapping (Phase 5.5). Same OSCAR column
+# names + ordering as ``_OSCAR_PRESSURE_COLUMNS``, but values come from
+# the ``Session`` model's cached fields instead of NightlySummary's
+# night-level stats. ``None`` columns still zero-fill: the "Pressure
+# Set" / "EPAP Set" / "IPAP Set" series are device-requested-setting
+# values URSA doesn't track at all, and the IPAP percentiles stay None
+# on the Session model for AirSense single-pressure data (NULL in the
+# DB → "0" in CSV via _fmt_number — same behavior as OSCAR's own
+# single-pressure exports). When/if bilevel-device support lands the
+# ipap_* columns get populated by the importer and the same CSV path
+# renders them automatically.
+_OSCAR_SESSION_PRESSURE_COLUMNS: tuple[tuple[str, str | None], ...] = (
+    ("Median Pressure", "pressure_median"),
+    ("Median Pressure Set", None),
+    ("Median IPAP", "ipap_median"),
+    ("Median IPAP Set", None),
+    ("Median EPAP", "epap_median"),
+    ("Median EPAP Set", None),
+    ("Median Flow Limit.", "flow_limit_median"),
+    ("95% Pressure", "pressure_p95"),
+    ("95% Pressure Set", None),
+    ("95% IPAP", "ipap_p95"),
+    ("95% IPAP Set", None),
+    ("95% EPAP", "epap_p95"),
+    ("95% EPAP Set", None),
+    ("95% Flow Limit.", "flow_limit_p95"),
+    ("99.5% Pressure", "pressure_p995"),
+    ("99.5% Pressure Set", None),
+    ("99.5% IPAP", "ipap_p995"),
+    ("99.5% IPAP Set", None),
+    ("99.5% EPAP", "epap_p995"),
+    ("99.5% EPAP Set", None),
+    ("99.5% Flow Limit.", "flow_limit_p995"),
+)
+
 _OSCAR_SUMMARY_HEADER: list[str] = (
     ["Date", "Session Count", "Start", "End", "Total Time", "AHI"]
     + [name for name, _ in _OSCAR_EVENT_COLUMNS]
@@ -260,11 +295,15 @@ def _build_session_row(
     ]
     for _name, urs_type in _OSCAR_EVENT_COLUMNS:
         row.append(str(counts.get(urs_type, 0) if urs_type else 0))
-    # Per-session pressure stats are not tracked at session granularity
-    # (operator decision 0.9.7 — zero-fill rather than expensive
-    # per-session timeseries scans). All 21 pressure columns get 0.
-    for _name, _attr in _OSCAR_PRESSURE_COLUMNS:
-        row.append("0")
+    # v6 (Phase 5.5) — per-session pressure stats come from the
+    # ``sessions`` table cache populated at import time + by the v6
+    # backfill on first 0.9.8 boot. Columns URSA doesn't track
+    # (Pressure Set / IPAP Set / EPAP Set on AirSense data, IPAP
+    # percentiles on single-pressure devices, Flow-Limit-Set) still
+    # zero-fill via _fmt_number(None) → "0".
+    for _name, attr in _OSCAR_SESSION_PRESSURE_COLUMNS:
+        val = getattr(session, attr) if attr else None
+        row.append(_fmt_number(val))
     return row
 
 

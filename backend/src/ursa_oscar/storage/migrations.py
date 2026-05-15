@@ -11,7 +11,7 @@ from importlib.resources import files
 from .db import DuckDBManager
 
 
-SCHEMA_VERSION = 5  # v5 (2026-05-14): import_jobs queue table for async imports
+SCHEMA_VERSION = 6  # v6 (2026-05-16): per-session pressure-stat cache (15 cols)
 
 
 _VERSION_DESCRIPTIONS = {
@@ -20,6 +20,7 @@ _VERSION_DESCRIPTIONS = {
     3: "id columns DEFAULT nextval(); resync sequences with MAX(id)+1 of existing rows",
     4: "Phase 4 Ticket 1: sessions + excluded_sessions tables; backfill sessions from nightly_events",
     5: "Phase 4 Ticket 2: import_jobs queue table for the in-process async worker",
+    6: "Phase 5.5: per-session pressure-stat cache (15 cols on sessions); auto-backfill from timeseries",
 }
 
 
@@ -116,6 +117,21 @@ def apply_migrations(db: DuckDBManager) -> int:
             GROUP BY e.date, e.session_id
         """)
 
+        # v6 post-DDL fixup: backfill per-session pressure stats for any
+        # sessions row where the cache is empty. Idempotent — skips rows
+        # where pressure_median is already set, so re-running
+        # apply_migrations is a no-op once everything's filled. Delegates
+        # to the shared helper so the importer's per-night invocation
+        # uses identical computation logic.
+        #
+        # DuckDBManager uses an RLock, so nesting `db.serialized()` inside
+        # this outer `with db.serialized() as conn:` is safe (re-entrant).
+        # quantile_cont is DuckDB-native + fast; for the operator's ~30
+        # nights × ~2 sessions × 4 channels it completes in well under a
+        # second. For a multi-year archive (1000+ nights × 2-3 sessions)
+        # expect a few seconds on first 0.9.8 startup, then never again.
+        backfill_session_pressure_stats(db)
+
         # Record version if not present at SCHEMA_VERSION.
         current = conn.execute(
             "SELECT COALESCE(MAX(version), 0) FROM schema_version"
@@ -140,3 +156,56 @@ def current_version(db: DuckDBManager) -> int:
             "SELECT COALESCE(MAX(version), 0) FROM schema_version"
         ).fetchone()
     return row[0] if row else 0
+
+
+# -------------------------------------------------------------------------
+# v6 backfill helper.
+# -------------------------------------------------------------------------
+
+
+def backfill_session_pressure_stats(
+    db: DuckDBManager,
+    date_filter=None,
+) -> int:
+    """Populate the 15 pressure-stat columns for any sessions row where
+    pressure_median IS NULL. Returns the number of rows touched.
+
+    Called from apply_migrations (no date filter — backfill everything
+    that's missing), from the importer (with a single-date filter so
+    only that night's sessions get computed), and from the standalone
+    ``backend/scripts/backfill_session_pressure.py`` operator script.
+    Fully idempotent — skips rows where pressure_median is already set,
+    so re-running is a no-op once everything's filled.
+
+    DuckDBManager uses an RLock, so calling this from inside
+    apply_migrations' already-held serialized() context is safe.
+    """
+    # Local import to avoid a circular import at module load (sessions
+    # repo imports the Session domain model which imports… nothing
+    # circular today, but keeps the dep arrow one-way).
+    from .repositories import sessions as sessions_repo
+
+    where = "WHERE pressure_median IS NULL"
+    params: list = []
+    if date_filter is not None:
+        where += " AND date = ?"
+        params.append(date_filter)
+
+    with db.serialized() as conn:
+        rows = conn.execute(
+            f"SELECT date, session_id, start_ts, end_ts FROM sessions {where} "
+            "ORDER BY date, session_id",
+            params if params else None,
+        ).fetchall()
+
+    if not rows:
+        return 0
+
+    touched = 0
+    for date, session_id, start_ts, end_ts in rows:
+        stats = sessions_repo.compute_pressure_stats(
+            db, date, start_ts, end_ts,
+        )
+        sessions_repo.set_pressure_stats(db, date, session_id, stats)
+        touched += 1
+    return touched

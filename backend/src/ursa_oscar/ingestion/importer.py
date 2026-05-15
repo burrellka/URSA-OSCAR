@@ -267,6 +267,20 @@ def import_path(
                 if verbose:
                     print(f"  {night_date}: wrote {ts_rows} time-series rows")
 
+            # v6 — per-session pressure-stat cache. Runs AFTER timeseries
+            # are written (the percentile queries read from them) and
+            # AFTER sessions are upserted (the helper walks the sessions
+            # table to find rows needing computation). Idempotent — if
+            # the operator imports without include_timeseries=True, the
+            # filter `pressure_median IS NULL` still matches and the
+            # helper computes NULLs for each channel (timeseries tables
+            # are empty for this date), which the Sessions CSV exporter
+            # renders as zero. A later import with include_timeseries=True
+            # will refill the stats once a `delete_for_date` resets the
+            # rows (sessions_repo.delete_for_date above did so).
+            from ..storage.migrations import backfill_session_pressure_stats
+            backfill_session_pressure_stats(db, date_filter=night_date)
+
             nights_imported += 1
             if earliest is None or summary.date < earliest.date:
                 earliest = summary

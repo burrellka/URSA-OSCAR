@@ -206,8 +206,51 @@ CREATE TABLE IF NOT EXISTS sessions (
     start_ts TIMESTAMP NOT NULL,
     end_ts TIMESTAMP NOT NULL,
     mask_on_minutes DOUBLE NOT NULL,
+    -- v6 (Phase 5.5) — per-session pressure-stat cache. Populated by
+    -- the importer for new imports + by the v6 auto-backfill in
+    -- apply_migrations() for existing rows. NULL on IPAP columns is
+    -- expected on single-pressure devices (AirSense 11 etc.) where
+    -- URSA doesn't track a separate IPAP channel — the columns exist
+    -- for future bilevel device support.
+    pressure_median   DOUBLE DEFAULT NULL,
+    pressure_p95      DOUBLE DEFAULT NULL,
+    pressure_p995     DOUBLE DEFAULT NULL,
+    ipap_median       DOUBLE DEFAULT NULL,
+    ipap_p95          DOUBLE DEFAULT NULL,
+    ipap_p995         DOUBLE DEFAULT NULL,
+    epap_median       DOUBLE DEFAULT NULL,
+    epap_p95          DOUBLE DEFAULT NULL,
+    epap_p995         DOUBLE DEFAULT NULL,
+    flow_limit_median DOUBLE DEFAULT NULL,
+    flow_limit_p95    DOUBLE DEFAULT NULL,
+    flow_limit_p995   DOUBLE DEFAULT NULL,
+    leak_median       DOUBLE DEFAULT NULL,
+    leak_p95          DOUBLE DEFAULT NULL,
+    leak_p995         DOUBLE DEFAULT NULL,
     PRIMARY KEY (date, session_id)
 );
+
+-- v6 migration ALTERs: bring 0.7.0-0.9.7 databases up to v6 column
+-- shape. CREATE TABLE IF NOT EXISTS above is a no-op for them; these
+-- ALTERs fill the gap. DuckDB ALTER TABLE ADD COLUMN IF NOT EXISTS is
+-- supported since 0.7.0; per ADR-003 we pin DuckDB 0.10+, so this is
+-- safe. Idempotent on fresh DBs — the columns already exist from the
+-- CREATE.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pressure_median   DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pressure_p95      DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS pressure_p995     DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ipap_median       DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ipap_p95          DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ipap_p995         DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS epap_median       DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS epap_p95          DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS epap_p995         DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS flow_limit_median DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS flow_limit_p95    DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS flow_limit_p995   DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS leak_median       DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS leak_p95          DOUBLE DEFAULT NULL;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS leak_p995         DOUBLE DEFAULT NULL;
 
 -- `excluded_sessions` is the operator-facing "don't count this session
 -- in the night's stats" list. Inserts and deletes are both used —

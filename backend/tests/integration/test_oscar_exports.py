@@ -211,6 +211,104 @@ def test_sessions_filename_convention(api_client):
     )
 
 
+def test_sessions_populates_real_pressure_stats(api_client):
+    """v6 (Phase 5.5) regression — the OSCAR Sessions CSV's Pressure +
+    EPAP percentile columns must show real values from the cached
+    pressure-stat columns, NOT zero-fill. The 0.9.7 Sessions endpoint
+    zero-filled all 21 pressure-stat slots; 0.9.8 populates the
+    URSA-tracked subset (pressure + EPAP + flow_limit).
+
+    Pressure and EPAP are delivered-pressure values from the CPAP — on
+    any session that actually ran, these are strictly > 0. Flow Limit
+    is a 0-1 severity indicator that's legitimately 0 at the median
+    for healthy breathing (asserted separately)."""
+    client, _ = api_client
+    r = client.get(
+        "/api/v1/exports/oscar/sessions.csv",
+        params={"start_date": "2026-05-08", "end_date": "2026-05-08"},
+    )
+    header, rows = _parse_csv(r.text)
+    assert rows, "expected at least one session row on 2026-05-08"
+
+    # Pressure + EPAP percentiles are always positive on a running
+    # CPAP. If any of these are 0 the cache wasn't populated.
+    strictly_positive = (
+        "Median Pressure", "95% Pressure", "99.5% Pressure",
+        "Median EPAP",     "95% EPAP",     "99.5% EPAP",
+    )
+    for row in rows:
+        for col in strictly_positive:
+            idx = header.index(col)
+            raw = row[idx]
+            try:
+                val = float(raw)
+            except ValueError:
+                raise AssertionError(
+                    f"{col} should be a numeric string, got {raw!r}"
+                )
+            assert val > 0, (
+                f"{col} for session row {row[1]} should be > 0 after v6 "
+                f"backfill — got {val}. If this is zero the cache wasn't "
+                f"populated, indicating a regression in the migration or "
+                f"importer hook."
+            )
+
+    # Flow Limit columns must be present + numeric. Median is often 0
+    # (normal breathing has no flow limitation); upper percentiles
+    # surface event severity. Just check parseability.
+    for row in rows:
+        for col in ("Median Flow Limit.", "95% Flow Limit.", "99.5% Flow Limit."):
+            idx = header.index(col)
+            float(row[idx])  # raises on bad parse
+
+
+def test_sessions_ipap_stays_zero_filled_on_airsense_data(api_client):
+    """v6 (Phase 5.5) — IPAP columns intentionally stay 0 on the
+    single-pressure-device fixture (AirSense 11). The Session model's
+    ipap_* fields are None for this data; _fmt_number(None) renders as
+    '0' to match OSCAR's own single-pressure-device output."""
+    client, _ = api_client
+    r = client.get(
+        "/api/v1/exports/oscar/sessions.csv",
+        params={"start_date": "2026-05-08", "end_date": "2026-05-08"},
+    )
+    header, rows = _parse_csv(r.text)
+    ipap_cols = ("Median IPAP", "95% IPAP", "99.5% IPAP")
+    for row in rows:
+        for col in ipap_cols:
+            idx = header.index(col)
+            assert row[idx] == "0", (
+                f"{col} on AirSense fixture data should zero-fill (no "
+                f"IPAP channel tracked on single-pressure devices), "
+                f"got {row[idx]!r}"
+            )
+
+
+def test_sessions_pressure_set_columns_still_zero_fill(api_client):
+    """v6 (Phase 5.5) — the 'Set' / requested-setting columns aren't
+    tracked at all in URSA-OSCAR (we record delivered pressure, not
+    the operator's requested setting). These keep zero-filling
+    forever."""
+    client, _ = api_client
+    r = client.get(
+        "/api/v1/exports/oscar/sessions.csv",
+        params={"start_date": "2026-05-08", "end_date": "2026-05-08"},
+    )
+    header, rows = _parse_csv(r.text)
+    set_cols = (
+        "Median Pressure Set", "Median IPAP Set", "Median EPAP Set",
+        "95% Pressure Set",    "95% IPAP Set",    "95% EPAP Set",
+        "99.5% Pressure Set",  "99.5% IPAP Set",  "99.5% EPAP Set",
+    )
+    for row in rows:
+        for col in set_cols:
+            idx = header.index(col)
+            assert row[idx] == "0", (
+                f"{col} should zero-fill (requested-setting columns not "
+                f"tracked), got {row[idx]!r}"
+            )
+
+
 # -----------------------------------------------------------------------
 # Daily endpoint
 # -----------------------------------------------------------------------

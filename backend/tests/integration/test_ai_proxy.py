@@ -667,6 +667,459 @@ def test_chat_suppresses_intermediate_complete_during_tool_loop(
     assert types.index("tool_result") < types.index("text")
 
 
+# -------------------------------------------------------------------------
+# Phase 5.5 Item 3 — scripted-adapter coverage for the Q1-Q5 acceptance
+# matrix + the error paths the operator-led validation missed in 0.9.0.
+#
+# These reuse the _ScriptedAdapter / _parse_sse_events / chat_ready_client
+# scaffolding above. The pattern is: build a realistic event sequence
+# for one query class, optionally stub execute_tool to return a canned
+# envelope, POST /ai/chat, assert the wire output matches the contract.
+#
+# None of these require live LLM credentials. They run in normal CI and
+# catch wire-protocol regressions before they reach the operator.
+# -------------------------------------------------------------------------
+
+
+def _ai_event(event_type, **payload):
+    """Shorthand — half the test body would be ``AiStreamEvent(...)``
+    constructor noise otherwise."""
+    from ursa_oscar.ai_proxy.providers.base import AiStreamEvent
+    return AiStreamEvent(event_type=event_type, payload=payload)
+
+
+def _setup_chat(monkeypatch, script, tool_results: dict | list | None = None):
+    """Wire a scripted adapter and a fake execute_tool into the ai
+    module. ``tool_results`` can be:
+      - a dict keyed by tool-name -> envelope (one-shot per call)
+      - a list of envelopes (consumed FIFO across all tool calls)
+      - None -> every tool call returns ``{ok: True, data: {}}``
+    """
+    import ursa_oscar.api.ai as ai_module
+
+    adapter = _ScriptedAdapter(script)
+    monkeypatch.setattr(
+        ai_module, "build_adapter", lambda *_a, **_kw: adapter,
+    )
+
+    if isinstance(tool_results, list):
+        results_iter = iter(tool_results)
+
+        async def fake_execute(name, args, api_base_url=None):
+            try:
+                return next(results_iter)
+            except StopIteration:
+                return {"ok": True, "data": {}}
+
+    elif isinstance(tool_results, dict):
+
+        async def fake_execute(name, args, api_base_url=None):
+            return tool_results.get(name, {"ok": True, "data": {}})
+
+    else:
+
+        async def fake_execute(name, args, api_base_url=None):
+            return {"ok": True, "data": {}}
+
+    monkeypatch.setattr(ai_module, "execute_tool", fake_execute)
+
+
+# --- Q1 — single-tool query (full-loop shape assertion) -----------------
+
+
+def test_chat_single_tool_query_full_loop(chat_ready_client, monkeypatch):
+    """Q1 acceptance — 'How was my sleep on 2026-05-13?' shape.
+
+    Wire contract: tool_call_start -> tool_call_complete -> tool_result
+    (server-injected after execute_tool) -> text deltas -> single final
+    complete(end_turn). The 0.9.7 chat panel's reducer + the operator's
+    live Claude validation both depend on this exact sequence."""
+    script = [
+        [
+            _ai_event("tool_call_start", id="tu_q1", name="get_nightly_summary"),
+            _ai_event("tool_call_complete", id="tu_q1",
+                      name="get_nightly_summary",
+                      arguments={"date": "2026-05-13"}),
+            _ai_event("complete", stop_reason="tool_use", usage={}),
+        ],
+        [
+            _ai_event("text", text="Your AHI was 3.94. "),
+            _ai_event("text", text="Two sessions, 7h 04m total."),
+            _ai_event("complete", stop_reason="end_turn",
+                      usage={"output_tokens": 42}),
+        ],
+    ]
+    _setup_chat(monkeypatch, script, tool_results=[
+        {"ok": True, "data": {"date": "2026-05-13", "total_ahi": 3.94,
+                              "session_count": 2}},
+    ])
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "How was my sleep on 2026-05-13?"}],
+        "context": {"current_date": "2026-05-13", "include_profile": False},
+    })
+    assert r.status_code == 200
+    events = _parse_sse_events(r.content)
+    types = [e["event_type"] for e in events]
+    assert types == [
+        "tool_call_start", "tool_call_complete",
+        "tool_result",
+        "text", "text",
+        "complete",
+    ]
+
+    # Tool-call argument plumbing made it through verbatim.
+    tcc = next(e for e in events if e["event_type"] == "tool_call_complete")
+    assert tcc["payload"]["name"] == "get_nightly_summary"
+    assert tcc["payload"]["arguments"] == {"date": "2026-05-13"}
+
+    # Tool result envelope reaches the client with its data intact.
+    tr = next(e for e in events if e["event_type"] == "tool_result")
+    assert tr["payload"]["result"]["ok"] is True
+    assert tr["payload"]["result"]["data"]["total_ahi"] == 3.94
+
+    # The concatenated text deltas form the final assistant message.
+    text_deltas = [e["payload"]["text"] for e in events if e["event_type"] == "text"]
+    assert "".join(text_deltas) == "Your AHI was 3.94. Two sessions, 7h 04m total."
+
+    # End-of-stream signal carries the right stop_reason.
+    final = next(e for e in events if e["event_type"] == "complete")
+    assert final["payload"]["stop_reason"] == "end_turn"
+
+
+# --- Q2 — multi-tool comparison loop ------------------------------------
+
+
+def test_chat_multi_tool_comparison_loop(chat_ready_client, monkeypatch):
+    """Q2 acceptance — 'Compare last night to the previous 5 nights'.
+
+    Realistic pattern: model calls get_nightly_summary for context,
+    then compare_periods for the actual comparison, then renders prose.
+    Three adapter turns; two tool executions; one final complete."""
+    script = [
+        [  # Turn 1: nightly summary
+            _ai_event("tool_call_start", id="tu_a", name="get_nightly_summary"),
+            _ai_event("tool_call_complete", id="tu_a",
+                      name="get_nightly_summary",
+                      arguments={"date": "2026-05-13"}),
+            _ai_event("complete", stop_reason="tool_use", usage={}),
+        ],
+        [  # Turn 2: compare periods
+            _ai_event("tool_call_start", id="tu_b", name="compare_periods"),
+            _ai_event("tool_call_complete", id="tu_b",
+                      name="compare_periods",
+                      arguments={"period_a_start": "2026-05-13",
+                                 "period_a_end": "2026-05-13",
+                                 "period_b_start": "2026-05-08",
+                                 "period_b_end": "2026-05-12"}),
+            _ai_event("complete", stop_reason="tool_use", usage={}),
+        ],
+        [  # Turn 3: prose answer
+            _ai_event("text", text="Last night's AHI of 3.94 was better than the previous-5 mean of 6.7."),
+            _ai_event("complete", stop_reason="end_turn",
+                      usage={"output_tokens": 88}),
+        ],
+    ]
+    _setup_chat(monkeypatch, script, tool_results=[
+        {"ok": True, "data": {"date": "2026-05-13", "total_ahi": 3.94}},
+        {"ok": True, "data": {"period_a": {"mean_ahi": 3.94},
+                              "period_b": {"mean_ahi": 6.7},
+                              "delta": -2.76}},
+    ])
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "Compare last night to the previous 5 nights."}],
+    })
+    assert r.status_code == 200
+    events = _parse_sse_events(r.content)
+    types = [e["event_type"] for e in events]
+
+    # Two complete loops + final text. Critical assertion: exactly ONE
+    # complete in the wire output (the 0.9.6 bug surfaced exactly here
+    # under multi-turn loops — and was the test the operator ran that
+    # validated the fix).
+    completes = [e for e in events if e["event_type"] == "complete"]
+    assert len(completes) == 1
+    assert completes[0]["payload"]["stop_reason"] == "end_turn"
+
+    # Two tool_result events, in the order the adapter requested them.
+    tool_results = [e for e in events if e["event_type"] == "tool_result"]
+    assert len(tool_results) == 2
+    assert tool_results[0]["payload"]["id"] == "tu_a"
+    assert tool_results[1]["payload"]["id"] == "tu_b"
+
+    # tool_call_start ordering preserved (UI renders chips in this
+    # order under the assistant message).
+    starts = [e for e in events if e["event_type"] == "tool_call_start"]
+    assert [s["payload"]["name"] for s in starts] == [
+        "get_nightly_summary", "compare_periods",
+    ]
+
+
+# --- Q3 — correlation query --------------------------------------------
+
+
+def test_chat_correlation_tool_call(chat_ready_client, monkeypatch):
+    """Q3 acceptance — 'Does my AHI correlate with leak?' shape.
+
+    Single analyze_correlation tool call. Verifies that complex argument
+    payloads (date ranges, metric names) survive the JSON-encode +
+    re-decode round trip through the SSE wire."""
+    script = [
+        [
+            _ai_event("tool_call_start", id="tu_c", name="analyze_correlation"),
+            _ai_event("tool_call_complete", id="tu_c",
+                      name="analyze_correlation",
+                      arguments={
+                          "metric_a": "total_ahi",
+                          "metric_b": "p95_leak",
+                          "start_date": "2026-04-15",
+                          "end_date": "2026-05-15",
+                          "lag_days": 0,
+                      }),
+            _ai_event("complete", stop_reason="tool_use", usage={}),
+        ],
+        [
+            _ai_event("text", text="Weak negative correlation (r=-0.21, n=28)."),
+            _ai_event("complete", stop_reason="end_turn", usage={}),
+        ],
+    ]
+    _setup_chat(monkeypatch, script, tool_results=[
+        {"ok": True, "data": {
+            "pearson_r": -0.21, "p_value": 0.28, "n_pairs": 28,
+            "interpretation": "weak_negative",
+        }},
+    ])
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "Does my AHI correlate with leak?"}],
+    })
+    assert r.status_code == 200
+    events = _parse_sse_events(r.content)
+
+    tcc = next(e for e in events if e["event_type"] == "tool_call_complete")
+    assert tcc["payload"]["name"] == "analyze_correlation"
+    args = tcc["payload"]["arguments"]
+    assert args["metric_a"] == "total_ahi"
+    assert args["metric_b"] == "p95_leak"
+    assert args["lag_days"] == 0  # int survives the JSON round-trip
+
+    tr = next(e for e in events if e["event_type"] == "tool_result")
+    assert tr["payload"]["result"]["data"]["pearson_r"] == -0.21
+
+
+# --- Q4 — trend query ---------------------------------------------------
+
+
+def test_chat_trend_tool_call(chat_ready_client, monkeypatch):
+    """Q4 acceptance — 'What's my AHI trend over the past month?' shape.
+
+    Single get_trend tool call. Verifies float values (slope per day,
+    intercept) round-trip cleanly through the SSE envelope."""
+    script = [
+        [
+            _ai_event("tool_call_start", id="tu_t", name="get_trend"),
+            _ai_event("tool_call_complete", id="tu_t", name="get_trend",
+                      arguments={"metric": "total_ahi",
+                                 "start_date": "2026-04-15",
+                                 "end_date": "2026-05-15"}),
+            _ai_event("complete", stop_reason="tool_use", usage={}),
+        ],
+        [
+            _ai_event("text", text="AHI trending down (-0.04/day, n=28)."),
+            _ai_event("complete", stop_reason="end_turn", usage={}),
+        ],
+    ]
+    _setup_chat(monkeypatch, script, tool_results=[
+        {"ok": True, "data": {
+            "slope_per_day": -0.04,
+            "intercept": 6.2,
+            "r_squared": 0.31,
+            "interpretation": "improving",
+        }},
+    ])
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "What's my AHI trend over the past month?"}],
+    })
+    assert r.status_code == 200
+    events = _parse_sse_events(r.content)
+
+    tcc = next(e for e in events if e["event_type"] == "tool_call_complete")
+    assert tcc["payload"]["arguments"]["metric"] == "total_ahi"
+
+    tr = next(e for e in events if e["event_type"] == "tool_result")
+    # Negative float survives sign + precision.
+    assert tr["payload"]["result"]["data"]["slope_per_day"] == -0.04
+
+
+# --- Q5 — manual logs query --------------------------------------------
+
+
+def test_chat_manual_logs_query(chat_ready_client, monkeypatch):
+    """Q5 acceptance — 'How many times did I take doxepin last week?'
+
+    Exercises the manual-logs tool path (distinct backend surface from
+    the nightly_summary / analytics path; lives under /manual-logs)."""
+    script = [
+        [
+            _ai_event("tool_call_start", id="tu_m",
+                      name="get_manual_log_summary"),
+            _ai_event("tool_call_complete", id="tu_m",
+                      name="get_manual_log_summary",
+                      arguments={"start_date": "2026-05-08",
+                                 "end_date": "2026-05-14",
+                                 "log_type": "medication"}),
+            _ai_event("complete", stop_reason="tool_use", usage={}),
+        ],
+        [
+            _ai_event("text", text="Doxepin logged on 5 of 7 days."),
+            _ai_event("complete", stop_reason="end_turn", usage={}),
+        ],
+    ]
+    _setup_chat(monkeypatch, script, tool_results=[
+        {"ok": True, "data": {
+            "total_entries": 5,
+            "by_type": {"medication": {"doxepin": 5}},
+            "date_range": {"start": "2026-05-08", "end": "2026-05-14"},
+        }},
+    ])
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "How many times did I take doxepin last week?"}],
+    })
+    assert r.status_code == 200
+    events = _parse_sse_events(r.content)
+    types = [e["event_type"] for e in events]
+    # Same canonical shape as the other tool queries.
+    assert types == [
+        "tool_call_start", "tool_call_complete",
+        "tool_result",
+        "text",
+        "complete",
+    ]
+
+    tr = next(e for e in events if e["event_type"] == "tool_result")
+    assert tr["payload"]["result"]["data"]["total_entries"] == 5
+
+
+# --- Error paths --------------------------------------------------------
+
+
+def test_chat_tool_error_surfaces_to_client(chat_ready_client, monkeypatch):
+    """Tool returns ok=False — the envelope must reach the client as a
+    tool_result event so the UI can render the error chip + the model
+    can describe what went wrong. Stream MUST continue (this is not a
+    fatal error — the LLM might recover by trying a different tool)."""
+    script = [
+        [
+            _ai_event("tool_call_start", id="tu_e", name="get_nightly_summary"),
+            _ai_event("tool_call_complete", id="tu_e",
+                      name="get_nightly_summary",
+                      arguments={"date": "2099-01-01"}),
+            _ai_event("complete", stop_reason="tool_use", usage={}),
+        ],
+        [
+            _ai_event("text", text="I couldn't find data for that date."),
+            _ai_event("complete", stop_reason="end_turn", usage={}),
+        ],
+    ]
+    _setup_chat(monkeypatch, script, tool_results=[
+        {"ok": False, "code": "NOT_FOUND",
+         "error": "No nightly data for 2099-01-01"},
+    ])
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "How was my sleep on 2099-01-01?"}],
+    })
+    assert r.status_code == 200
+    events = _parse_sse_events(r.content)
+
+    # tool_result delivered the error envelope intact (UI's tool chip
+    # transitions to 'error' state based on this).
+    tr = next(e for e in events if e["event_type"] == "tool_result")
+    assert tr["payload"]["result"]["ok"] is False
+    assert tr["payload"]["result"]["code"] == "NOT_FOUND"
+
+    # Stream still ends with a single clean complete — tool error is
+    # not a stream-fatal condition.
+    completes = [e for e in events if e["event_type"] == "complete"]
+    assert len(completes) == 1
+    assert completes[0]["payload"]["stop_reason"] == "end_turn"
+
+
+def test_chat_adapter_error_mid_stream_terminates_cleanly(
+    chat_ready_client, monkeypatch,
+):
+    """Distinct from the existing 'error as first event' test — here
+    the adapter emits some text, THEN errors. The server must forward
+    the partial text and the error, and NOT emit a trailing complete
+    after the error (the client breaks on either)."""
+    script = [
+        [
+            _ai_event("text", text="Looking at your data… "),
+            _ai_event("error", message="upstream 503", code="upstream_error"),
+            # Adapter doesn't emit a complete after error — but even if
+            # a faulty adapter did, the server must surface the error
+            # and stop. We don't add one here.
+        ],
+    ]
+    _setup_chat(monkeypatch, script)
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert r.status_code == 200
+    events = _parse_sse_events(r.content)
+    types = [e["event_type"] for e in events]
+
+    # Text arrived first, then error. NO trailing complete.
+    assert types == ["text", "error"], f"unexpected sequence: {types}"
+    assert events[-1]["payload"]["code"] == "upstream_error"
+
+
+def test_chat_safety_cap_terminates_runaway_loop(chat_ready_client, monkeypatch):
+    """A misbehaving model that keeps requesting tools indefinitely
+    (Llama 3.2 3B has been observed to do this) must be capped at the
+    8-iteration safety limit. The server emits a tool_loop_limit
+    error and stops — no trailing complete, no unbounded resource use."""
+    # Nine turns where the adapter always asks for another tool. The
+    # server should process 8 and emit the safety-cap error on turn 9.
+    script = []
+    for i in range(9):
+        script.append([
+            _ai_event("tool_call_start", id=f"tu_{i}", name="get_nightly_summary"),
+            _ai_event("tool_call_complete", id=f"tu_{i}",
+                      name="get_nightly_summary",
+                      arguments={"date": "2026-05-13"}),
+            _ai_event("complete", stop_reason="tool_use", usage={}),
+        ])
+    _setup_chat(monkeypatch, script)
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "loop forever please"}],
+    })
+    assert r.status_code == 200
+    events = _parse_sse_events(r.content)
+
+    # Should see exactly 8 tool_call_start events (one per loop iteration
+    # within the cap), then a tool_loop_limit error.
+    starts = [e for e in events if e["event_type"] == "tool_call_start"]
+    assert len(starts) == 8, (
+        f"expected exactly 8 loop iterations under the cap, got {len(starts)}"
+    )
+    errors = [e for e in events if e["event_type"] == "error"]
+    assert len(errors) == 1
+    assert errors[0]["payload"]["code"] == "tool_loop_limit"
+
+    # No trailing complete after the cap error.
+    completes = [e for e in events if e["event_type"] == "complete"]
+    assert len(completes) == 0
+
+
+# --- Existing pre-Phase-5.5 tests (kept here in original order) --------
+
+
 def test_chat_emits_no_complete_when_adapter_errors(
     chat_ready_client, monkeypatch,
 ):

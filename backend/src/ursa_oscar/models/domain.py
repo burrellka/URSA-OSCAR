@@ -105,6 +105,14 @@ class Session(BaseModel):
     renumbered after empty-session filtering by the importer, so the
     (date, session_id) pair is stable across re-imports as long as
     the same sessions remain non-empty.
+
+    Phase 5.5 (schema v6) — per-session pressure-stat cache. Populated
+    at import-time and via auto-backfill on first 0.9.8 startup.
+    IPAP columns stay None on single-pressure devices (AirSense 11) —
+    URSA doesn't track a separate IPAP channel there; the columns
+    exist for future bilevel-device support. The OSCAR Sessions CSV
+    exporter renders None as "0" via its zero-fill formatter, so
+    AirSense exports look the same in IPAP columns as OSCAR's own.
     """
     date: date_t
     session_id: int
@@ -112,6 +120,24 @@ class Session(BaseModel):
     end_ts: datetime
     mask_on_minutes: float
     excluded: bool = False  # populated on read; not stored on this row
+
+    # v6 — per-session pressure stats. All optional; NULL when the
+    # session has no timeseries data for the channel.
+    pressure_median: float | None = None
+    pressure_p95: float | None = None
+    pressure_p995: float | None = None
+    ipap_median: float | None = None
+    ipap_p95: float | None = None
+    ipap_p995: float | None = None
+    epap_median: float | None = None
+    epap_p95: float | None = None
+    epap_p995: float | None = None
+    flow_limit_median: float | None = None
+    flow_limit_p95: float | None = None
+    flow_limit_p995: float | None = None
+    leak_median: float | None = None
+    leak_p95: float | None = None
+    leak_p995: float | None = None
 
 
 class ExcludedSession(BaseModel):

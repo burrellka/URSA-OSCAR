@@ -5,7 +5,7 @@
 # which delegates to infra/build_and_push.ps1 — see Decision 13 / APEX precedent.
 
 .PHONY: help dev up down logs build test test-backend test-mcp verify-mcp \
-        verify-mcp-live import migrate backup restore clean
+        verify-mcp-live import migrate backfill-session-pressure backup restore clean
 
 help: ## Show this help.
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  %-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -57,6 +57,9 @@ import: ## Import a DATALOG/SD-card dir into DuckDB. Usage: make import PATH=/pa
 
 migrate: ## Apply DuckDB migrations.
 	cd backend && python -c "from ursa_oscar.config import get_settings; from ursa_oscar.storage.db import DuckDBManager; from ursa_oscar.storage.migrations import apply_migrations; s=get_settings(); db=DuckDBManager(s.db_path, read_only=False); v=apply_migrations(db); db.close(); print(f'Schema at v{v}')"
+
+backfill-session-pressure: ## v6 forced re-run of per-session pressure-stat backfill. Use after timeseries changes or to recompute. Pass CLEAR=1 to force-reset.
+	cd backend && python -m scripts.backfill_session_pressure $(if $(CLEAR),--clear,)
 
 backup: ## Snapshot the DuckDB file to data/backups/ with a timestamp.
 	@mkdir -p data/backups
