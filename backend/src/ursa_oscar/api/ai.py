@@ -306,6 +306,18 @@ async def chat(req: ChatRequest, request: Request):
     api_base_url = f"http://{server[0]}:{server[1]}"
 
     async def event_generator():
+        # 0.9.4 — emit an immediate SSE comment (keepalive) before the
+        # first LLM byte arrives. Two things this protects against:
+        #   1. Intermediate proxies (Cloudflare, gateway nginx, etc.)
+        #      that wait to see actual bytes before relaying response
+        #      headers and the streaming body to the client.
+        #   2. Browsers that may delay engaging the ReadableStream
+        #      consumer until the first chunk arrives.
+        # SSE comments (lines starting with ':') are required to be
+        # ignored by clients — they're the canonical way to keep the
+        # connection warm without adding semantic events.
+        yield ": keepalive\n\n"
+
         messages = list(req.messages)
         # Safety cap on tool loops. Each loop = one adapter.chat() call +
         # possible tool executions. Typical use: 1-3 loops for a multi-
@@ -317,11 +329,25 @@ async def chat(req: ChatRequest, request: Request):
             stop_reason: str | None = None
 
             try:
-                async for event in adapter.chat(
-                    messages=messages,
-                    tools=TOOL_DESCRIPTORS,
-                    system_prompt=system_prompt,
+                # 0.9.4 — interleave keepalive comments between adapter
+                # events so quiet stretches (the LLM thinking before its
+                # first token, between tool result + next-turn response,
+                # etc.) don't let intermediate proxies time out the SSE
+                # connection. _with_keepalive yields an SSE-comment line
+                # roughly every 5s when the adapter is quiet.
+                async for line in _with_keepalive(
+                    adapter.chat(
+                        messages=messages,
+                        tools=TOOL_DESCRIPTORS,
+                        system_prompt=system_prompt,
+                    ),
+                    keepalive_seconds=5.0,
                 ):
+                    if isinstance(line, str):
+                        # SSE comment line (keepalive) — pass through verbatim.
+                        yield line
+                        continue
+                    event: AiStreamEvent = line
                     yield _sse_pack(event)
 
                     if event.event_type == "text":
@@ -402,6 +428,58 @@ async def chat(req: ChatRequest, request: Request):
 def _sse_pack(event: AiStreamEvent) -> str:
     """Encode an AiStreamEvent as a single SSE frame."""
     return f"data: {event.model_dump_json()}\n\n"
+
+
+async def _with_keepalive(source, keepalive_seconds: float):
+    """Yield items from an async iterator, interleaved with SSE-comment
+    keepalive strings every ``keepalive_seconds`` seconds of silence.
+
+    The yielded stream is heterogeneous:
+      - ``str`` values are pre-formatted SSE keepalive comments
+        (``": keepalive\\n\\n"``) — caller should yield them straight
+        through without re-packing.
+      - All other values are items from the source iterator (here:
+        ``AiStreamEvent`` objects from a ProviderAdapter).
+
+    Implementation: spawn the source iteration as a task that pushes
+    into an asyncio.Queue. Pull from the queue with a timeout; on
+    timeout, yield a keepalive instead.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    _SENTINEL = object()
+
+    async def _pump():
+        try:
+            async for item in source:
+                await queue.put(item)
+        except Exception as e:
+            # Propagate the error through the queue so the consumer
+            # sees it in the right loop iteration.
+            await queue.put(("__error__", e))
+        finally:
+            await queue.put(_SENTINEL)
+
+    task = asyncio.create_task(_pump(), name="ai-chat-pump")
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=keepalive_seconds)
+            except asyncio.TimeoutError:
+                yield ": keepalive\n\n"
+                continue
+            if item is _SENTINEL:
+                return
+            if isinstance(item, tuple) and len(item) == 2 and item[0] == "__error__":
+                raise item[1]
+            yield item
+    finally:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
 
 
 def _load_profile(request: Request) -> dict | None:

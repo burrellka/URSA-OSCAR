@@ -326,10 +326,21 @@ export const api = {
    * Open an SSE chat stream. Returns an async generator over parsed
    * AiStreamEvent objects. Caller iterates with `for await (...)`.
    *
-   * We deliberately use `fetch + ReadableStream` rather than the
-   * native EventSource because EventSource doesn't support POST
-   * bodies. The browser-native shape is `data: <json>\\n\\n` chunks
-   * which we parse here into typed events.
+   * We use ``fetch + ReadableStream`` rather than ``EventSource``
+   * because EventSource doesn't support POST bodies.
+   *
+   * 0.9.2 hardening (after operator hit a "stuck at running" bug):
+   *   - Accept BOTH ``\\n\\n`` and ``\\r\\n\\r\\n`` frame separators
+   *     (some proxies normalize line endings)
+   *   - Flush the TextDecoder + drain any remaining buffered frame
+   *     after the read loop exits (so a final frame that's not
+   *     terminated with the separator still gets parsed)
+   *   - Skip SSE comment lines (``: keepalive``) cleanly — these are
+   *     emitted by the backend to keep the connection alive during
+   *     quiet stretches but aren't data frames
+   *   - Log frame counts to the browser console when
+   *     ``localStorage.ursa_oscar_chat_debug === '1'`` so operators
+   *     can verify they're seeing the events they expect
    */
   chatStream: async function* (
     messages: AiMessage[],
@@ -347,27 +358,85 @@ export const api = {
       try { detail = (await resp.json()).detail ?? ''; } catch { /* ignore */ }
       throw new ApiError(resp.status, `POST /ai/chat -> ${resp.status}`, detail);
     }
+
+    const debug = typeof localStorage !== 'undefined'
+      && localStorage.getItem('ursa_oscar_chat_debug') === '1';
+    const dlog = (...args: unknown[]) => {
+      if (debug) console.log('[ursa chat sse]', ...args);
+    };
+
     const reader = resp.body.getReader();
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      // SSE frames are separated by \n\n. Split + process each.
-      let nl: number;
-      while ((nl = buffer.indexOf('\n\n')) !== -1) {
-        const frame = buffer.slice(0, nl);
-        buffer = buffer.slice(nl + 2);
-        if (!frame.startsWith('data: ')) continue;
-        const payload = frame.slice(6).trim();
+    let frameCount = 0;
+
+    /** Split buffer on the FIRST frame separator (\n\n OR \r\n\r\n).
+     *  Returns [frame, rest] or null if no separator found. */
+    function pluck(): [string, string] | null {
+      const lf = buffer.indexOf('\n\n');
+      const crlf = buffer.indexOf('\r\n\r\n');
+      // Use whichever separator appears FIRST in the buffer.
+      let idx = -1;
+      let sepLen = 0;
+      if (lf !== -1 && (crlf === -1 || lf < crlf)) {
+        idx = lf; sepLen = 2;
+      } else if (crlf !== -1) {
+        idx = crlf; sepLen = 4;
+      }
+      if (idx === -1) return null;
+      return [buffer.slice(0, idx), buffer.slice(idx + sepLen)];
+    }
+
+    function* drain(): Generator<AiStreamEvent, void, void> {
+      while (true) {
+        const split = pluck();
+        if (!split) break;
+        const [frame, rest] = split;
+        buffer = rest;
+        // Skip empty frames + SSE comment lines (": keepalive").
+        const trimmed = frame.trim();
+        if (!trimmed) continue;
+        if (trimmed.startsWith(':')) {
+          dlog('comment:', trimmed.slice(0, 40));
+          continue;
+        }
+        if (!trimmed.startsWith('data:')) {
+          dlog('non-data frame skipped:', trimmed.slice(0, 80));
+          continue;
+        }
+        const payload = trimmed.slice(5).trim();
         if (!payload) continue;
         try {
-          yield JSON.parse(payload) as AiStreamEvent;
-        } catch {
-          // Malformed JSON — skip and keep going. Unlikely in practice.
+          const event = JSON.parse(payload) as AiStreamEvent;
+          frameCount += 1;
+          dlog(`event ${frameCount}:`, event.event_type, event.payload);
+          yield event;
+        } catch (e) {
+          dlog('malformed JSON:', payload.slice(0, 100), e);
         }
       }
+    }
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) {
+          // Flush the decoder (drains any partial UTF-8 sequence).
+          buffer += decoder.decode();
+          // Drain any final frame that might not have been terminated
+          // with the separator. We append the separator first so the
+          // pluck() loop catches the last fragment if any.
+          if (buffer && !buffer.endsWith('\n\n') && !buffer.endsWith('\r\n\r\n')) {
+            buffer += '\n\n';
+          }
+          yield* drain();
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        yield* drain();
+      }
+    } finally {
+      dlog(`stream ended after ${frameCount} events`);
     }
   },
 };
