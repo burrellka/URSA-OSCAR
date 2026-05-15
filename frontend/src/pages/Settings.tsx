@@ -169,6 +169,17 @@ export default function Settings() {
         <a href="/data-management" className="btn-secondary">Open Data Management →</a>
       </div>
 
+      {/* --- AI Assistant link (Phase 5) ---------------------------------- */}
+      <div className="chart-card" style={{ marginBottom: '1rem' }}>
+        <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem' }}>AI Assistant</h2>
+        <p style={{ marginBottom: '0.75rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+          Configure the in-app AI agent. Bring-your-own-key for Claude API, OpenAI,
+          Gemini, OpenRouter, Groq, or a Local LLM. API keys are encrypted at rest;
+          conversations live in your browser only.
+        </p>
+        <a href="/settings/ai" className="btn-secondary">Open AI Assistant →</a>
+      </div>
+
       {/* --- Secrets Management notes -------------------------------------- */}
       <div className="chart-card" style={{ marginBottom: '1rem' }}>
         <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem' }}>Secrets Management</h2>

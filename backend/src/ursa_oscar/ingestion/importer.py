@@ -23,7 +23,7 @@ import argparse
 import sys
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -147,7 +147,7 @@ def import_path(
     works against a read-only DB if dry-running).
     """
     source_path = Path(source_path)
-    started_at = datetime.utcnow()
+    started_at = datetime.now(timezone.utc)
     try:
         night_dirs = list_night_dirs(source_path)
     except FileNotFoundError as e:
@@ -292,46 +292,63 @@ def import_path(
             ))
             continue
 
-    # Phase 3 Item 1C: tri-state status discriminator.
-    #   completed — every attempted night landed cleanly; nights_skipped == 0
-    #   partial   — at least one night landed AND at least one was skipped
-    #   failed    — no nights landed; either every dir errored or the
-    #               source had no night dirs but the call asked for an
-    #               import (we treat "no dirs found" as completed below
-    #               so the importer doesn't shout when pointed at an
-    #               empty SD card.)
-    if nights_imported > 0 and not skipped:
+    # Phase 3 Item 1C + Phase 5 Ticket 0.5: tri-state status discriminator.
+    #
+    # Branches, in priority order:
+    #   completed — every attempted night landed cleanly; OR every night
+    #               was already in the DB and got deduped; OR the source
+    #               had no recognizable nights at all.
+    #   partial   — at least one new night landed AND at least one was
+    #               skipped (with reason); OR no new nights landed BUT
+    #               some skipped (errors) AND some known (deduped) — the
+    #               operator should look at the skipped list.
+    #   failed    — no nights landed AND no nights deduped; either every
+    #               attempted dir errored or the call asked for an import
+    #               but found nothing usable.
+    #
+    # The Phase 5 fix corrects the case Kevin hit in the field: when 0
+    # nights imported BUT 28 were already known AND 36 errored, the
+    # previous logic reported "failed" — but the import ran fine; 28
+    # known nights are still in the DB. The new logic surfaces "partial"
+    # which renders an amber badge + invites a look at the skipped list,
+    # without alarming the operator unnecessarily.
+    skipped_count = len(skipped)
+    has_imported = nights_imported > 0
+    has_errors = skipped_count > 0
+    has_dedup = nights_skipped_existing > 0
+
+    error_message: str | None = None
+    if has_imported and not has_errors:
         status = "completed"
-        error_message: str | None = None
-    elif nights_imported > 0 and skipped:
+    elif has_imported and has_errors:
         status = "partial"
         error_message = (
-            f"{nights_imported} night(s) imported; {len(skipped)} skipped. "
+            f"{nights_imported} night(s) imported; {skipped_count} skipped. "
             f"See the skipped list for per-night reasons."
         )
-    elif skipped:
-        # Zero imported AND at least one skip attempt — every dir errored.
+    elif has_errors and has_dedup:
+        # Operator's screenshot case: 0 new, some known, some errored.
+        # Not "failed" — the import ran fine; some nights just have no
+        # usable EDF data. Partial draws attention to the skip list
+        # without painting the result tile red.
+        status = "partial"
+        error_message = (
+            f"No new nights to import. {nights_skipped_existing} already known; "
+            f"{skipped_count} skipped (no usable EDF data). See the skipped "
+            f"list for per-night reasons."
+        )
+    elif has_errors:
+        # All attempted dirs errored AND nothing was even already in the DB.
+        # This is the real failure case — nothing worked.
         status = "failed"
         error_message = (
-            f"All {len(skipped)} night dir(s) failed to import. "
+            f"All {skipped_count} night dir(s) failed to import. "
             f"First error: {skipped[0].reason}"
         )
     else:
-        # Zero imported, zero skipped — source had no recognizable night
-        # dirs at all. Benign no-op rather than failure.
+        # Either: pure-dedup re-import (0 new, N known, 0 errors), OR an
+        # empty source (0 new, 0 known, 0 errors). Both are benign.
         status = "completed"
-        error_message = None
-
-    # If every discovered night was already known and we ran in
-    # skip_existing mode, that's a fully clean re-import. Report it as
-    # "completed" with all the dedup detail on nights_skipped_existing.
-    if (
-        nights_imported == 0
-        and not skipped
-        and nights_skipped_existing > 0
-    ):
-        status = "completed"
-        error_message = None
 
     return ImportLogEntry(
         source_path=str(source_path),

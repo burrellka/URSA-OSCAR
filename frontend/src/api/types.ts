@@ -298,3 +298,76 @@ export interface VocabAddResult {
   values: string[];
   profile_active_medications_updated: boolean;
 }
+
+
+// =====================================================================
+// Phase 5 — AI proxy types. Mirror the backend's ai_proxy module.
+// =====================================================================
+
+export interface AiProviderPreset {
+  id: string;
+  label: string;
+  adapter: 'claude' | 'openai_compat';
+  default_endpoint: string;
+  default_models: string[];
+  auth_header_name: string;
+  auth_header_format: string;
+  notes: string;
+  supports_local_routing?: boolean;
+}
+
+export interface AiToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface AiMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_calls?: AiToolCall[];
+  tool_call_id?: string;
+}
+
+export interface AiMaskedConfig {
+  enabled: boolean;
+  provider_id: string | null;
+  model: string;
+  endpoint_url: string;
+  routing_mode: string;
+  proxy_endpoint_url: string | null;
+  custom_system_prompt: string | null;
+  api_key_set: boolean;
+  api_keys_set: Record<string, boolean>;
+}
+
+export interface AiConfigPatch {
+  enabled?: boolean;
+  provider_id?: string;
+  model?: string;
+  endpoint_url?: string;
+  routing_mode?: string;
+  proxy_endpoint_url?: string | null;
+  custom_system_prompt?: string | null;
+  api_key?: string;  // never returned, only sent
+}
+
+export type AiStreamEventType =
+  | 'text'
+  | 'tool_call_start'
+  | 'tool_call_input'
+  | 'tool_call_complete'
+  | 'tool_result'
+  | 'complete'
+  | 'error';
+
+export interface AiStreamEvent {
+  event_type: AiStreamEventType;
+  payload: Record<string, unknown>;
+}
+
+export interface AiTestResult {
+  ok: boolean;
+  error?: string;
+  model_info?: Record<string, unknown>;
+}

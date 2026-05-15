@@ -2,6 +2,12 @@
 // Raw `fetch()` per ADR-001 (no TanStack Query) — small surface, single user.
 
 import type {
+  AiConfigPatch,
+  AiMaskedConfig,
+  AiMessage,
+  AiProviderPreset,
+  AiStreamEvent,
+  AiTestResult,
   ImportJob,
   ManualLogEntry,
   ManualLogType,
@@ -294,6 +300,76 @@ export const api = {
 
   bulkExportUrl: (start_date: string, end_date: string) =>
     `${BASE}/exports?start_date=${start_date}&end_date=${end_date}&format=csv`,
+
+  // =====================================================================
+  // Phase 5 — AI proxy. Five endpoints; the chat path uses SSE not fetch.
+  // =====================================================================
+
+  listAiProviders: () =>
+    request<{ providers: AiProviderPreset[] }>(`${BASE}/ai/providers`),
+
+  getAiConfig: () => request<AiMaskedConfig>(`${BASE}/ai/config`),
+
+  patchAiConfig: (patch: AiConfigPatch) =>
+    request<AiMaskedConfig>(`${BASE}/ai/config`, {
+      method: 'POST',
+      body: JSON.stringify(patch),
+    }),
+
+  testAiProvider: (provider_id: string) =>
+    request<AiTestResult>(`${BASE}/ai/test`, {
+      method: 'POST',
+      body: JSON.stringify({ provider_id }),
+    }),
+
+  /**
+   * Open an SSE chat stream. Returns an async generator over parsed
+   * AiStreamEvent objects. Caller iterates with `for await (...)`.
+   *
+   * We deliberately use `fetch + ReadableStream` rather than the
+   * native EventSource because EventSource doesn't support POST
+   * bodies. The browser-native shape is `data: <json>\\n\\n` chunks
+   * which we parse here into typed events.
+   */
+  chatStream: async function* (
+    messages: AiMessage[],
+    context: { current_date?: string; include_profile?: boolean } = {},
+    signal?: AbortSignal,
+  ): AsyncGenerator<AiStreamEvent, void, void> {
+    const resp = await fetch(`${BASE}/ai/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+      body: JSON.stringify({ messages, context }),
+      signal,
+    });
+    if (!resp.ok || !resp.body) {
+      let detail = '';
+      try { detail = (await resp.json()).detail ?? ''; } catch { /* ignore */ }
+      throw new ApiError(resp.status, `POST /ai/chat -> ${resp.status}`, detail);
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // SSE frames are separated by \n\n. Split + process each.
+      let nl: number;
+      while ((nl = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 2);
+        if (!frame.startsWith('data: ')) continue;
+        const payload = frame.slice(6).trim();
+        if (!payload) continue;
+        try {
+          yield JSON.parse(payload) as AiStreamEvent;
+        } catch {
+          // Malformed JSON — skip and keep going. Unlikely in practice.
+        }
+      }
+    }
+  },
 };
 
 

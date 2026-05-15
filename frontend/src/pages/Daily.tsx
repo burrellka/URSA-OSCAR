@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Trash2, AlertTriangle } from 'lucide-react';
+import { Trash2, AlertTriangle, Bot } from 'lucide-react';
+import AiChatPanel from '../components/AiChatPanel';
+import type { AiMaskedConfig } from '../api/types';
 import { api, ApiError } from '../api/client';
 import type { PreviewDeleteResult } from '../api/client';
 import type { NightlyEvent, NightlySummary, Session, UserProfile } from '../api/types';
@@ -174,6 +176,18 @@ export default function Daily() {
 
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
+  // Phase 5 — AI chat panel state. Config is fetched on mount + when the
+  // panel opens so the chip in the panel header reflects the latest
+  // provider/model. Background mounts pay a tiny network cost; the
+  // payload is small.
+  const [showChat, setShowChat] = useState(false);
+  const [aiConfig, setAiConfig] = useState<AiMaskedConfig | null>(null);
+  useEffect(() => {
+    api.getAiConfig()
+      .then(setAiConfig)
+      .catch(() => setAiConfig(null));  // 4xx = AI not yet configured; fine.
+  }, [showChat]);
+
   // Phase 4 Ticket 1.5 — Compact view toggle. Persists in localStorage
   // so the operator's preference survives page reloads. Default is
   // expanded (compact = false) per architect spec.
@@ -235,6 +249,24 @@ export default function Daily() {
             style={{ fontSize: '0.8125rem' }}
           >
             {compact ? 'Expanded view' : 'Compact view'}
+          </button>
+          {/* Phase 5 — AI chat panel toggle. Always visible; disabled state
+              communicated by the panel itself (with link to Settings → AI). */}
+          <button
+            type="button"
+            onClick={() => setShowChat((s) => !s)}
+            title={aiConfig?.enabled ? "Ask URSA about this night" : "AI Assistant — configure in Settings"}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '0.375rem',
+              padding: '0.5rem 0.75rem', borderRadius: '6px',
+              background: showChat ? 'var(--accent-primary, #2563eb)' : 'transparent',
+              border: `1px solid var(--accent-primary, #2563eb)`,
+              color: showChat ? '#fff' : 'var(--accent-primary, #2563eb)',
+              cursor: 'pointer', fontSize: '0.8125rem',
+            }}
+          >
+            <Bot size={14} />
+            Ask URSA
           </button>
           {summary && (
             <button
@@ -315,6 +347,16 @@ export default function Daily() {
           }}
         />
       )}
+
+      {/* Phase 5 — AI chat panel, slide-in from right. Always mounted
+          (we manage the open prop) so localStorage state survives the
+          panel's close/reopen. */}
+      <AiChatPanel
+        open={showChat}
+        onClose={() => setShowChat(false)}
+        currentDate={summary?.date || date || null}
+        aiConfig={aiConfig}
+      />
     </div>
   );
 }

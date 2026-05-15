@@ -11,9 +11,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .ai_proxy.config_store import ConfigStore as AiConfigStore
+from .ai_proxy.secrets import SecretStore, resolve_secret_key
 from .api import (
-    analytics, events, exports, health, imports, manual_logs, nights, profile,
-    system, timeseries, vocab,
+    ai, analytics, events, exports, health, imports, manual_logs, nights,
+    profile, system, timeseries, vocab,
 )
 from .config import get_settings
 from .services.import_worker import ImportWorker
@@ -48,6 +50,19 @@ async def lifespan(app: FastAPI):
     profile_store.ensure_initialized(profile_path)
     vocab_store.ensure_initialized(vocab_path)
     app.state.db = db
+
+    # Phase 5 — AI proxy state. Secret key resolution may write a
+    # generated key to /data/secret_key.gen on first start; that's
+    # logged loudly so the operator notices.
+    data_dir = settings.db_path.parent
+    secret_key = resolve_secret_key(data_dir)
+    app.state.ai_secrets = SecretStore(
+        key=secret_key,
+        store_path=data_dir / "secrets.enc",
+    )
+    app.state.ai_config_store = AiConfigStore(
+        store_path=data_dir / "ai_config.json",
+    )
 
     worker = ImportWorker(db)
     worker.start()
@@ -97,6 +112,7 @@ def create_app() -> FastAPI:
     app.include_router(system.router)
     app.include_router(profile.router)
     app.include_router(analytics.router)
+    app.include_router(ai.router)
 
     return app
 

@@ -1,68 +1,18 @@
-"""MCP tool functional tests against a fixture-loaded DuckDB.
+"""MCP tool functional tests.
 
-These call the tool functions directly (not through SSE) to validate the
-envelope shape + data payload against the canonical regression targets.
+Phase 5 Ticket 0 — unblocked (was previously ``pytest.mark.skip`` waiting
+for a fixture that booted the API). The conftest in this directory now
+spins up the real URSA-OSCAR API in a background thread (seeded with the
+4-night regression fixture) and points the MCP client at it via
+``URSA_OSCAR_API_URL``. Each test calls the tool function directly; the
+tool's internal ``api_get`` / ``api_post`` reach the in-process API
+exactly the way the production container would over kairos-net.
+
+These tests cover the {ok, data, ...} envelope contract + the canonical
+event-count and percentile values for the 4-night fixture (see
+``backend/tests/regression/canonical_targets.py``).
 """
 from __future__ import annotations
-
-import os
-import sys
-from pathlib import Path
-
-import pytest
-
-# These tests were written when MCP tools queried DuckDB directly. After the
-# v0.1.3 refactor MCP tools call the API container over kairos-net (DuckDB's
-# cross-container lock model required this). They now need a running API
-# container to exercise. Marked as integration; re-enable when we have a
-# fixture that boots the API.
-pytestmark = pytest.mark.skip(
-    reason="Pending rewrite: tools moved from direct-DuckDB to API-proxy; "
-    "need a running API container fixture (tracked for Phase 1.5)."
-)
-
-
-# Set env BEFORE importing the server module (which calls build_auth_provider
-# at import time). Use a fixture DB that the importer will populate.
-_TMP_DB_PATH = Path(__file__).resolve().parents[1] / "_test_tools.duckdb"
-os.environ.setdefault("URSA_OSCAR_MCP_BEARER_TOKEN", "test-static")
-os.environ.setdefault("URSA_OSCAR_MCP_OAUTH_CLIENT_ID", "test-client")
-os.environ.setdefault("URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET", "test-secret")
-os.environ.setdefault("URSA_OSCAR_MCP_BASE_URL", "https://test.local")
-os.environ["URSA_OSCAR_DB_PATH"] = str(_TMP_DB_PATH)
-
-
-@pytest.fixture(scope="module", autouse=True)
-def seed_db():
-    """Build the URSA-OSCAR DuckDB once, populate with the 4-night fixture."""
-    # Make the backend package importable
-    backend_src = Path(__file__).resolve().parents[2] / "backend" / "src"
-    sys.path.insert(0, str(backend_src))
-    backend_pkg_root = Path(__file__).resolve().parents[2] / "backend"
-    sys.path.insert(0, str(backend_pkg_root))
-
-    from ursa_oscar.ingestion.importer import import_path
-    from ursa_oscar.storage.db import DuckDBManager
-    from ursa_oscar.storage.migrations import apply_migrations
-
-    fixture_root = backend_pkg_root / "tests" / "regression" / "fixtures" / "nights" / "oscar-reference"
-    if _TMP_DB_PATH.exists():
-        _TMP_DB_PATH.unlink()
-    db = DuckDBManager(_TMP_DB_PATH, read_only=False)
-    apply_migrations(db)
-    import_path(fixture_root, db)
-    db.close()
-
-    yield
-
-    # Cleanup: reset the read-only MCP client + drop the test DB
-    from ursa_oscar_mcp.client import close_db
-    close_db()
-    if _TMP_DB_PATH.exists():
-        try:
-            _TMP_DB_PATH.unlink()
-        except PermissionError:
-            pass  # Windows file lock; harmless during teardown
 
 
 def test_get_nightly_summary_single_date():
@@ -178,20 +128,35 @@ def test_get_session_breakdown_5_10():
 
 
 def test_list_available_nights():
+    """Phase 5 Ticket 0 — relaxed from exact-length-4 to canonical-subset
+    semantics. Fixture set has grown across phases (Phase 2 + 3 + 4 added
+    nights for various regression cases); the canonical 4 must still be
+    present and 2026-05-07 must be the earliest. Matches the pattern
+    backend/tests/integration/test_api_endpoints.py already uses."""
     from ursa_oscar_mcp.tools.list_nights import list_available_nights
 
     res = list_available_nights()
     assert res["ok"] is True
     nights = res["data"]["nights"]
-    assert len(nights) == 4
-    assert nights[0]["date"] == "2026-05-07"
+    assert len(nights) >= 4
+    dates = [n["date"] for n in nights]
+    assert {"2026-05-07", "2026-05-08", "2026-05-09", "2026-05-10"}.issubset(set(dates))
+    assert dates[0] == "2026-05-07"  # earliest first
 
 
 def test_list_available_nights_with_filter():
+    """Same canonical-subset relaxation: 5/9 (7.376) and 5/10 (3.129) MUST
+    qualify under AHI<10; any later fixture nights with AHI<10 are also
+    accepted (the importer's regression target set has grown across
+    phases). The original strict-equality check fails when the fixture
+    contains a 5th low-AHI night."""
     from ursa_oscar_mcp.tools.list_nights import list_available_nights
 
     res = list_available_nights(filter_expression="AHI < 10")
     assert res["ok"] is True
     nights = res["data"]["nights"]
-    # 5/9 (7.376) and 5/10 (3.129) qualify
-    assert {n["date"] for n in nights} == {"2026-05-09", "2026-05-10"}
+    dates = {n["date"] for n in nights}
+    assert {"2026-05-09", "2026-05-10"}.issubset(dates)
+    # Confirm 5/8 (which has AHI ~24) is NOT in the filtered set — sanity
+    # check that the filter is actually applied.
+    assert "2026-05-08" not in dates

@@ -27,6 +27,13 @@ dependencies = [
     # Phase-2-polish Item 5: /api/v1/system/verify-mcp hits the MCP container
     # over kairos-net to run the 4 checks from infra/verify-mcp-live.sh.
     "httpx>=0.27",
+    # Phase 5 — AI proxy. Fernet for at-rest secret encryption (already
+    # transitively pulled in by httpx/cryptography, made explicit here)
+    # + the official Anthropic SDK for the Claude adapter. The OpenAI-
+    # compat adapter uses raw httpx for the chat-completions stream
+    # (no SDK dependency).
+    "cryptography>=42.0",
+    "anthropic>=0.40",
 ]
 
 [project.optional-dependencies]

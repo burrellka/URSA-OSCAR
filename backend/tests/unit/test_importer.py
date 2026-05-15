@@ -140,3 +140,102 @@ def test_force_reimport_overrides_skip_existing(tmp_path):
     assert forced.nights_skipped_existing == 0
 
     db.close()
+
+
+def test_status_discriminator_partial_when_some_errored_and_some_deduped(tmp_path):
+    """Phase 5 Ticket 0.5 — locks down the operator-discovered bug.
+
+    Scenario from the field: re-import an SD card where 28 nights are
+    already in the DB and 36 night dirs exist on the card but have no
+    usable EDF data (empty sessions). Pre-0.5 the importer reported
+    ``status="failed"`` because nights_imported=0 and skipped>0; that
+    was misleading because the import ran fine — the 28 known nights
+    are happily in the DB. The fix routes this case to ``"partial"``
+    so the result tile renders amber (look at the skip list) instead
+    of red (everything broke).
+
+    This test fakes both a successful first import (populating
+    nights_skipped_existing on the second run) AND empty / no-session
+    night dirs by pointing the second run at a fixture root with at
+    least one empty-DATALOG directory in addition to the canonical
+    nights.
+    """
+    import os
+
+    db_file = tmp_path / "status.duckdb"
+    db = DuckDBManager(db_file, read_only=False)
+    apply_migrations(db)
+
+    # First pass — seed the DB with the canonical 4 nights.
+    import_path(FIXTURE_ROOT, db, skip_existing=False)
+
+    # Build a second-pass source dir that contains BOTH the canonical
+    # fixture nights AND a deliberately-empty YYYYMMDD/ dir. The fixture
+    # is DATALOG-flat (YYYYMMDD/ directly under the root, no DATALOG/
+    # wrapper); same convention here. The second-pass importer hits the
+    # "some skipped (no usable sessions), some already known" code path.
+    import shutil
+    second_pass = tmp_path / "second_pass"
+    second_pass.mkdir(parents=True)
+    for d in os.listdir(FIXTURE_ROOT):
+        src = FIXTURE_ROOT / d
+        if src.is_dir():
+            # copytree (vs. symlink) for Windows-test robustness — symlink
+            # perms are flaky on Windows CI / non-admin shells.
+            shutil.copytree(src, second_pass / d)
+    # Deliberately-empty night dir — importer's discover_sessions returns
+    # empty for it and it ends up on the skipped list with reason
+    # "No usable sessions found."
+    (second_pass / "20990101").mkdir()
+
+    log = import_path(second_pass, db, skip_existing=True)
+    assert log.nights_imported == 0
+    assert log.nights_skipped_existing >= 4  # the canonical 4
+    assert log.nights_skipped >= 1  # the empty 2099-01-01
+    # The key assertion — partial, not failed.
+    assert log.status == "partial", (
+        f"expected partial (some deduped + some errored); got {log.status}. "
+        f"Pre-fix this reported failed which alarmed the operator unnecessarily."
+    )
+    assert log.error_message is not None
+    assert "already known" in log.error_message.lower()
+    db.close()
+
+
+def test_status_discriminator_failed_only_when_truly_nothing_succeeded(tmp_path):
+    """Failed should now require 0 imported AND 0 deduped — i.e. nothing
+    in the DB ever recognized any of the attempted dirs."""
+    import os
+
+    db_file = tmp_path / "fail.duckdb"
+    db = DuckDBManager(db_file, read_only=False)
+    apply_migrations(db)
+
+    # Source containing only broken / empty dirs and NOTHING in the DB.
+    bad_source = tmp_path / "bad" / "DATALOG"
+    bad_source.mkdir(parents=True)
+    (bad_source / "20990101").mkdir()
+    (bad_source / "20990102").mkdir()
+
+    log = import_path(tmp_path / "bad", db)
+    assert log.nights_imported == 0
+    assert log.nights_skipped_existing == 0
+    assert log.nights_skipped == 2
+    assert log.status == "failed"
+    db.close()
+
+
+def test_status_discriminator_completed_for_pure_dedup(tmp_path):
+    """The clean re-import case — all nights already known, nothing new,
+    nothing errored — should stay 'completed'."""
+    db_file = tmp_path / "dedup.duckdb"
+    db = DuckDBManager(db_file, read_only=False)
+    apply_migrations(db)
+
+    import_path(FIXTURE_ROOT, db, skip_existing=False)
+    log = import_path(FIXTURE_ROOT, db, skip_existing=True)
+    assert log.nights_imported == 0
+    assert log.nights_skipped == 0
+    assert log.nights_skipped_existing >= 4
+    assert log.status == "completed"
+    db.close()
