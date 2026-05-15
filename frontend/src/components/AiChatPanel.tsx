@@ -47,6 +47,12 @@ interface DisplayMessage {
   content: string;
   tool_calls?: ToolCallDisplay[];
   in_flight?: boolean;
+  /** Epoch ms when the assistant turn started streaming. Used to
+   *  compute elapsed time. */
+  started_at?: number;
+  /** Seconds the turn took once complete. Persisted on the message
+   *  for the "took 12s" footer on past responses. */
+  elapsed_seconds?: number;
 }
 
 
@@ -65,6 +71,15 @@ export default function AiChatPanel({ open, onClose, currentDate, aiConfig }: Pr
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [streamError, setStreamError] = useState<string | null>(null);
+  // 0.9.1 — tick a clock once a second while streaming so the UI can
+  // show an elapsed-time indicator. Pure cosmetic; setNow only fires
+  // while streaming === true.
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (!streaming) return;
+    const id = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(id);
+  }, [streaming]);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -126,9 +141,11 @@ export default function AiChatPanel({ open, onClose, currentDate, aiConfig }: Pr
       content: '',
       in_flight: true,
       tool_calls: [],
+      started_at: Date.now(),
     };
     const nextMessages = [...messages, userMsg, assistantMsg];
     setMessages(nextMessages);
+    setNow(Date.now());  // seed the ticker so the indicator starts at 0s
     setInput('');
     setStreaming(true);
 
@@ -170,9 +187,15 @@ export default function AiChatPanel({ open, onClose, currentDate, aiConfig }: Pr
       }
     } finally {
       setStreaming(false);
-      setMessages((cur) => cur.map((m, i) =>
-        i === cur.length - 1 ? { ...m, in_flight: false } : m,
-      ));
+      setMessages((cur) => cur.map((m, i) => {
+        if (i !== cur.length - 1) return m;
+        const elapsedMs = m.started_at ? Date.now() - m.started_at : 0;
+        return {
+          ...m,
+          in_flight: false,
+          elapsed_seconds: Math.round(elapsedMs / 100) / 10,  // tenths
+        };
+      }));
       abortRef.current = null;
     }
   }
@@ -254,7 +277,7 @@ export default function AiChatPanel({ open, onClose, currentDate, aiConfig }: Pr
           />
         )}
         {messages.map((m, i) => (
-          <MessageBubble key={i} message={m} />
+          <MessageBubble key={i} message={m} now={now} />
         ))}
         {streamError && (
           <div className="error-banner" style={{ fontSize: '0.8125rem' }}>
@@ -476,8 +499,23 @@ function SuggestedPrompts({
 }
 
 
-function MessageBubble({ message }: { message: DisplayMessage }) {
+function MessageBubble({ message, now }: { message: DisplayMessage; now: number }) {
   const isUser = message.role === 'user';
+
+  // Elapsed-time text. Two cases:
+  // 1. In flight — recompute every render (the parent ticks `now` once a
+  //    second while streaming so this re-renders).
+  // 2. Completed — show the recorded `elapsed_seconds`.
+  let elapsedText: string | null = null;
+  if (!isUser) {
+    if (message.in_flight && message.started_at) {
+      const elapsed = Math.max(0, Math.round((now - message.started_at) / 100) / 10);
+      elapsedText = `Thinking… ${elapsed.toFixed(1)}s`;
+    } else if (message.elapsed_seconds != null) {
+      elapsedText = `${message.elapsed_seconds.toFixed(1)}s`;
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
       <div style={{
@@ -509,6 +547,21 @@ function MessageBubble({ message }: { message: DisplayMessage }) {
       {(message.tool_calls || []).map((tc) => (
         <ToolCallChip key={tc.id} call={tc} />
       ))}
+      {elapsedText && (
+        <div
+          style={{
+            alignSelf: 'flex-start',
+            fontSize: '0.6875rem',
+            color: 'var(--text-muted, #6b7280)',
+            fontVariantNumeric: 'tabular-nums',
+            marginTop: '-0.125rem',
+            paddingLeft: '0.25rem',
+          }}
+          aria-live={message.in_flight ? 'polite' : 'off'}
+        >
+          {elapsedText}
+        </div>
+      )}
     </div>
   );
 }
