@@ -103,12 +103,47 @@ def test_resolve_secret_key_generates_when_missing(tmp_path, monkeypatch):
     assert isinstance(key, bytes) and len(key) > 0
     # First-start file should exist with the generated key bytes.
     assert (tmp_path / "secret_key.gen").exists()
-    # Re-call should generate again (key not persisted to env yet).
+
+
+def test_resolve_secret_key_reuses_gen_file_on_restart(tmp_path, monkeypatch):
+    """0.9.2 fix — the first-start dance is no longer destructive across
+    restarts. If the operator generated a key on boot N but hasn't yet
+    copied it into compose env, boot N+1 should REUSE the same key from
+    the .gen file rather than generating a fresh one (which would
+    destroy any secrets stored during boot N).
+    """
+    monkeypatch.delenv("URSA_OSCAR_SECRET_KEY", raising=False)
+    # Simulate first boot: generates a fresh key.
+    key1 = resolve_secret_key(tmp_path)
+    assert (tmp_path / "secret_key.gen").exists()
+
+    # Simulate restart: env still unset, gen file still present.
+    # Must reuse the existing key, NOT generate a new one.
     key2 = resolve_secret_key(tmp_path)
-    # Both keys should be valid Fernet keys, but different (generated).
-    Fernet(key)
-    Fernet(key2)
-    assert key != key2
+    assert key1 == key2, (
+        "Restart with unset env + existing .gen file must reuse the "
+        "previously-generated key. Pre-0.9.2 this regenerated and "
+        "broke stored secrets."
+    )
+
+    # And once the operator copies to env, env wins (gen file is harmless leftover).
+    monkeypatch.setenv("URSA_OSCAR_SECRET_KEY", Fernet.generate_key().decode("ascii"))
+    key3 = resolve_secret_key(tmp_path)
+    Fernet(key3)  # valid
+    assert key3 != key1  # env value, not gen file value
+
+
+def test_resolve_secret_key_regenerates_when_gen_file_corrupted(tmp_path, monkeypatch):
+    """If the .gen file exists but contains garbage (mid-write crash,
+    operator-edited, etc.), regenerate rather than crash. Stored
+    secrets become unrecoverable in that case but that's already true
+    when the .gen contents are corrupted."""
+    monkeypatch.delenv("URSA_OSCAR_SECRET_KEY", raising=False)
+    (tmp_path / "secret_key.gen").write_bytes(b"not-a-fernet-key")
+    key = resolve_secret_key(tmp_path)
+    Fernet(key)  # valid replacement
+    # And the .gen file should have been rewritten with the new key.
+    assert (tmp_path / "secret_key.gen").read_bytes().strip() == key
 
 
 def test_resolve_secret_key_honors_env(monkeypatch, tmp_path):
