@@ -533,13 +533,12 @@ function MessageBubble({ message, now }: { message: DisplayMessage; now: number 
           message.content
         ) : (
           <div className="markdown-body">
-            {message.content || (
-              message.in_flight ? <em style={{ opacity: 0.6 }}>thinking…</em> : null
-            )}
-            {message.content && (
+            {message.content ? (
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {message.content}
               </ReactMarkdown>
+            ) : (
+              message.in_flight ? <em style={{ opacity: 0.6 }}>thinking…</em> : null
             )}
           </div>
         )}
