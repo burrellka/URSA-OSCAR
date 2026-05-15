@@ -98,52 +98,65 @@ def test_secret_store_wrong_key_returns_none(tmp_path):
 
 
 def test_resolve_secret_key_generates_when_missing(tmp_path, monkeypatch):
+    """0.9.5 — first boot persists the key to ``master.key`` on the
+    data volume. No operator action required; future restarts reuse
+    it transparently."""
     monkeypatch.delenv("URSA_OSCAR_SECRET_KEY", raising=False)
     key = resolve_secret_key(tmp_path)
     assert isinstance(key, bytes) and len(key) > 0
-    # First-start file should exist with the generated key bytes.
-    assert (tmp_path / "secret_key.gen").exists()
+    assert (tmp_path / "master.key").exists()
+    # File contents should match the returned key — the operator's
+    # backup of /data/ should include the key for restore.
+    assert (tmp_path / "master.key").read_bytes().strip() == key
 
 
-def test_resolve_secret_key_reuses_gen_file_on_restart(tmp_path, monkeypatch):
-    """0.9.2 fix — the first-start dance is no longer destructive across
-    restarts. If the operator generated a key on boot N but hasn't yet
-    copied it into compose env, boot N+1 should REUSE the same key from
-    the .gen file rather than generating a fresh one (which would
-    destroy any secrets stored during boot N).
-    """
+def test_resolve_secret_key_reuses_master_key_on_restart(tmp_path, monkeypatch):
+    """0.9.5 design — master.key is the canonical persistent location.
+    Every subsequent boot reads from it without regenerating."""
     monkeypatch.delenv("URSA_OSCAR_SECRET_KEY", raising=False)
-    # Simulate first boot: generates a fresh key.
     key1 = resolve_secret_key(tmp_path)
-    assert (tmp_path / "secret_key.gen").exists()
-
-    # Simulate restart: env still unset, gen file still present.
-    # Must reuse the existing key, NOT generate a new one.
+    assert (tmp_path / "master.key").exists()
+    # Simulate restart: same key returned, file unchanged.
     key2 = resolve_secret_key(tmp_path)
-    assert key1 == key2, (
-        "Restart with unset env + existing .gen file must reuse the "
-        "previously-generated key. Pre-0.9.2 this regenerated and "
-        "broke stored secrets."
-    )
-
-    # And once the operator copies to env, env wins (gen file is harmless leftover).
+    assert key1 == key2
+    # And once the operator sets env, env wins (master.key is harmless leftover).
     monkeypatch.setenv("URSA_OSCAR_SECRET_KEY", Fernet.generate_key().decode("ascii"))
     key3 = resolve_secret_key(tmp_path)
-    Fernet(key3)  # valid
-    assert key3 != key1  # env value, not gen file value
+    Fernet(key3)
+    assert key3 != key1
 
 
-def test_resolve_secret_key_regenerates_when_gen_file_corrupted(tmp_path, monkeypatch):
-    """If the .gen file exists but contains garbage (mid-write crash,
-    operator-edited, etc.), regenerate rather than crash. Stored
-    secrets become unrecoverable in that case but that's already true
-    when the .gen contents are corrupted."""
+def test_resolve_secret_key_regenerates_when_master_key_corrupted(tmp_path, monkeypatch):
+    """If master.key contains garbage (mid-write crash, operator-edited,
+    etc.), regenerate rather than crash. Stored secrets become
+    unrecoverable in that case but that was already true when the key
+    bytes were lost."""
     monkeypatch.delenv("URSA_OSCAR_SECRET_KEY", raising=False)
-    (tmp_path / "secret_key.gen").write_bytes(b"not-a-fernet-key")
+    (tmp_path / "master.key").write_bytes(b"not-a-fernet-key")
     key = resolve_secret_key(tmp_path)
     Fernet(key)  # valid replacement
-    # And the .gen file should have been rewritten with the new key.
-    assert (tmp_path / "secret_key.gen").read_bytes().strip() == key
+    assert (tmp_path / "master.key").read_bytes().strip() == key
+
+
+def test_resolve_secret_key_migrates_from_legacy_gen_file(tmp_path, monkeypatch):
+    """0.9.5 migration — when an operator upgrades from 0.9.2-0.9.4
+    (where the key lived in ``secret_key.gen``), the first boot on
+    0.9.5 should copy the legacy file's contents into the new
+    ``master.key`` location and continue working. Stored secrets
+    survive the upgrade transparently."""
+    monkeypatch.delenv("URSA_OSCAR_SECRET_KEY", raising=False)
+    legacy_key = Fernet.generate_key()
+    (tmp_path / "secret_key.gen").write_bytes(legacy_key)
+
+    migrated = resolve_secret_key(tmp_path)
+    assert migrated == legacy_key, (
+        "0.9.5 must migrate the legacy .gen file's contents to master.key "
+        "without changing the key bytes — stored secrets must survive."
+    )
+    assert (tmp_path / "master.key").exists()
+    assert (tmp_path / "master.key").read_bytes().strip() == legacy_key
+    # Legacy file left in place so a downgrade rollback still works.
+    assert (tmp_path / "secret_key.gen").exists()
 
 
 def test_resolve_secret_key_honors_env(monkeypatch, tmp_path):

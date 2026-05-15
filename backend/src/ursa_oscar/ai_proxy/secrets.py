@@ -146,33 +146,47 @@ class SecretStore:
 
 
 def resolve_secret_key(data_dir: Path) -> bytes:
-    """Load the Fernet key from the environment or — if unset — generate
-    one and stage it for operator pickup.
+    """Load the Fernet master key.
 
     Returns the key bytes (urlsafe base64-encoded; what Fernet expects).
 
-    First-start flow:
-      1. ``URSA_OSCAR_SECRET_KEY`` unset
-      2. **If ``<data_dir>/secret_key.gen`` already exists** with a valid
-         Fernet key, REUSE it — don't regenerate. This is the 0.9.2 fix
-         for the operator-discovered bug where restarting the API
-         between "auto-generate" and "operator-copies-to-env" would
-         destroy previously-stored secrets. Now restarts are idempotent
-         until the operator completes the dance.
-      3. Otherwise generate a fresh Fernet key, write to the .gen file
-      4. Log a prominent warning telling the operator to copy the key
-         into their compose env and delete the file
-      5. Use the key for this session
+    Resolution order (0.9.5 — operator-action-free):
 
-    The reuse path means stored secrets survive restarts even when the
-    operator hasn't yet copied the key to env. The .gen file is mode
-    0600 so it's not exposed casually; the operator should still copy
-    + delete to remove the on-disk plaintext-key surface.
+      1. ``URSA_OSCAR_SECRET_KEY`` env (advanced override) — validated,
+         used if present. The operator who wants explicit key management
+         (e.g., for backup separation or rotation) sets this. Most
+         operators don't.
+
+      2. ``<data_dir>/master.key`` — the canonical persistent location.
+         Generated automatically on first boot with mode 0600. Re-read
+         on every subsequent boot. **No operator action ever required.**
+
+      3. ``<data_dir>/secret_key.gen`` — legacy path from 0.9.0-0.9.4
+         when the design required an operator-action dance. Migrated
+         to ``master.key`` on first 0.9.5 boot. Original file left in
+         place for one boot cycle to allow rollback to 0.9.4 if needed;
+         the operator can delete it manually after.
+
+    Design notes (0.9.5 simplification vs. 0.9.0 original design):
+
+    The 0.9.0 design required the operator to (a) read the auto-
+    generated key from a .gen file, (b) paste into compose env, (c)
+    delete the .gen file. That was rooted in an enterprise threat
+    model — separate the key from the data so a single-file leak
+    doesn't compromise both. For URSA-OSCAR's single-operator-private-
+    network threat model, the key file and the encrypted data file
+    sitting next to each other is the same attack surface as the env
+    var and the encrypted data file: both live on the same disk.
+    Eliminating the dance removes a UX rough edge without changing
+    the operator's real security posture.
+
+    Operators who DO want the original threat model can set
+    ``URSA_OSCAR_SECRET_KEY`` in env and delete the .key file. The
+    code path honors env over file when both exist.
     """
     raw = os.environ.get(SECRET_KEY_ENV, "").strip()
     if raw:
-        # Validate the key is well-formed Fernet (urlsafe-base64, 32 bytes).
-        # Pass it through Fernet() — raises ValueError on bad input.
+        # Operator override — validate and return.
         try:
             Fernet(raw.encode("ascii"))
         except Exception as e:
@@ -184,47 +198,60 @@ def resolve_secret_key(data_dir: Path) -> bytes:
             ) from e
         return raw.encode("ascii")
 
-    # No env key. Check for an existing .gen file from a prior boot —
-    # reuse the key from it if valid. This makes the first-start dance
-    # idempotent across restarts: the operator can stop / restart /
-    # crash / redeploy and the stored secrets remain decryptable
-    # against the same key.
     data_dir.mkdir(parents=True, exist_ok=True)
-    gen_path = data_dir / "secret_key.gen"
-    if gen_path.exists():
+    key_path = data_dir / "master.key"
+    legacy_path = data_dir / "secret_key.gen"
+
+    # 2 — canonical persistent location.
+    if key_path.exists():
         try:
-            existing = gen_path.read_bytes().strip()
-            Fernet(existing)  # validates shape; raises on garbage
-            logger.warning(
-                "URSA_OSCAR_SECRET_KEY is unset but %s already exists; "
-                "reusing the previously-generated key. Copy this value "
-                "into your compose env as URSA_OSCAR_SECRET_KEY=<value> "
-                "and delete %s when convenient — until you do, the "
-                "plaintext key sits on disk in this file.",
-                gen_path, gen_path,
-            )
+            existing = key_path.read_bytes().strip()
+            Fernet(existing)
             return existing
         except Exception:
-            # Corrupted or unreadable .gen file — fall through to
-            # regenerate. The old encrypted secrets become unrecoverable
-            # but that was already the case if the .gen file was lost.
             logger.exception(
-                "secret_key.gen exists at %s but contents aren't a valid "
-                "Fernet key. Regenerating; any previously-stored secrets "
-                "are unrecoverable.", gen_path,
+                "master.key exists at %s but contents aren't a valid Fernet "
+                "key. Will regenerate; any previously-stored secrets are "
+                "unrecoverable.", key_path,
             )
 
-    # No env key, no usable .gen file — generate and stage.
+    # 3 — legacy migration from 0.9.0-0.9.4 .gen file.
+    if legacy_path.exists():
+        try:
+            legacy = legacy_path.read_bytes().strip()
+            Fernet(legacy)
+            key_path.write_bytes(legacy)
+            try:
+                os.chmod(key_path, stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                pass
+            logger.info(
+                "Migrated legacy %s to %s (0.9.5+ canonical path). "
+                "You can delete the legacy file when you're confident "
+                "you won't roll back to 0.9.4 or earlier.",
+                legacy_path, key_path,
+            )
+            return legacy
+        except Exception:
+            logger.exception(
+                "Legacy %s exists but contents aren't a valid Fernet key. "
+                "Will generate a fresh one. Any previously-stored secrets "
+                "are unrecoverable.", legacy_path,
+            )
+
+    # First boot ever — generate.
     key = Fernet.generate_key()
-    gen_path.write_bytes(key)
+    key_path.write_bytes(key)
     try:
-        os.chmod(gen_path, stat.S_IRUSR | stat.S_IWUSR)
+        os.chmod(key_path, stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
-    logger.warning(
-        "URSA_OSCAR_SECRET_KEY is unset. Generated a fresh Fernet key and "
-        "wrote it to %s. Copy this value into your compose env as "
-        "URSA_OSCAR_SECRET_KEY=<value>, then delete %s.",
-        gen_path, gen_path,
+    logger.info(
+        "Generated initial master key at %s (mode 0600). "
+        "Persisted on the data volume; future restarts reuse this key "
+        "transparently. No operator action required. To manage the key "
+        "yourself (rotation, separation from data), set %s in env and "
+        "delete the file.",
+        key_path, SECRET_KEY_ENV,
     )
     return key
