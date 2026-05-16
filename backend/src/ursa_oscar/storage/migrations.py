@@ -3,12 +3,21 @@
 Loads schema.sql, executes idempotent CREATE / ALTER statements, records the
 applied version in schema_version, and runs version-gated post-DDL fixups
 (e.g., the v3 sequence resync that heals existing desynced databases).
+
+0.9.9 — emits an INFO log line whenever a schema-version transition
+actually happens, so ``docker logs ursa-oscar-api`` is sufficient to
+confirm a migration ran on first-boot at a new version. No log line
+when re-running at the same version (idempotent path stays quiet).
 """
 from __future__ import annotations
 
+import logging
+import time
 from importlib.resources import files
 
 from .db import DuckDBManager
+
+logger = logging.getLogger(__name__)
 
 
 SCHEMA_VERSION = 6  # v6 (2026-05-16): per-session pressure-stat cache (15 cols)
@@ -44,9 +53,20 @@ def apply_migrations(db: DuckDBManager) -> int:
     """Apply migrations up to SCHEMA_VERSION. Returns the version now in force.
 
     Idempotent — running twice is a no-op once at the target version.
+
+    0.9.9: emits an INFO log line on actual version transitions
+    (``Schema migrated vN -> vM``) and on non-trivial backfill row
+    counts. Repeated invocations at the same SCHEMA_VERSION are silent
+    so server-restart logs stay clean.
     """
     if db.read_only:
         raise RuntimeError("apply_migrations called on a read-only DB connection")
+
+    # 0.9.9 — capture the BEFORE-version so we can log only when a real
+    # transition happens. On a fresh DB this is 0; on an existing DB at
+    # the target version this is SCHEMA_VERSION (and we'll stay silent).
+    before_version = _read_schema_version_safe(db)
+    t_start = time.perf_counter()
 
     schema_sql = _read_schema_sql()
 
@@ -130,7 +150,7 @@ def apply_migrations(db: DuckDBManager) -> int:
         # nights × ~2 sessions × 4 channels it completes in well under a
         # second. For a multi-year archive (1000+ nights × 2-3 sessions)
         # expect a few seconds on first 0.9.8 startup, then never again.
-        backfill_session_pressure_stats(db)
+        backfill_touched = backfill_session_pressure_stats(db)
 
         # Record version if not present at SCHEMA_VERSION.
         current = conn.execute(
@@ -147,7 +167,40 @@ def apply_migrations(db: DuckDBManager) -> int:
                 (SCHEMA_VERSION, f"Schema v{SCHEMA_VERSION} — {description}"),
             )
 
+    # 0.9.9 — emit observability log lines, but only when something
+    # actually changed.
+    elapsed_s = time.perf_counter() - t_start
+    if before_version < SCHEMA_VERSION:
+        description = _VERSION_DESCRIPTIONS.get(SCHEMA_VERSION, "")
+        logger.info(
+            "Schema migrated v%d -> v%d in %.2fs%s",
+            before_version, SCHEMA_VERSION, elapsed_s,
+            f" — {description}" if description else "",
+        )
+    if backfill_touched > 0:
+        # The v6 backfill (and any future post-DDL backfill that uses
+        # the same helper) reports per-row work to operator-visible logs.
+        # Zero-row backfills stay quiet so server restarts don't spam.
+        logger.info(
+            "Backfilled per-session pressure stats for %d session row(s)",
+            backfill_touched,
+        )
+
     return SCHEMA_VERSION
+
+
+def _read_schema_version_safe(db: DuckDBManager) -> int:
+    """Best-effort current-version lookup. Returns 0 if the
+    schema_version table doesn't exist yet (fresh DB) — that's the
+    expected first-boot case, not an error."""
+    try:
+        with db.serialized() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_version"
+            ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    except Exception:
+        return 0
 
 
 def current_version(db: DuckDBManager) -> int:

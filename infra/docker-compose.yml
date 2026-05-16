@@ -6,7 +6,7 @@ networks:
 
 services:
   ursa-oscar-api:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-api:${URSA_OSCAR_API_IMAGE_VERSION:-0.9.8}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-api:${URSA_OSCAR_API_IMAGE_VERSION:-0.9.9}
     container_name: ursa-oscar-api
     environment:
       URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
@@ -21,7 +21,7 @@ services:
       # Phase 5.5 — strict version pinning. Defaults below mirror the
       # tag the `image:` lines pin to, so the Settings UI version chips
       # always reflect what's actually deployed.
-      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-0.9.8}
+      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-0.9.9}
       URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-0.7.0}
       URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-0.9.4}
       URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-0.9.0}
