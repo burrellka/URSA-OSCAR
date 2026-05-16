@@ -20,7 +20,7 @@ from .db import DuckDBManager
 logger = logging.getLogger(__name__)
 
 
-SCHEMA_VERSION = 6  # v6 (2026-05-16): per-session pressure-stat cache (15 cols)
+SCHEMA_VERSION = 7  # v7 (2026-05-16): analytical_cache table for Phase 6 Ticket 6.1
 
 
 _VERSION_DESCRIPTIONS = {
@@ -30,6 +30,7 @@ _VERSION_DESCRIPTIONS = {
     4: "Phase 4 Ticket 1: sessions + excluded_sessions tables; backfill sessions from nightly_events",
     5: "Phase 4 Ticket 2: import_jobs queue table for the in-process async worker",
     6: "Phase 5.5: per-session pressure-stat cache (15 cols on sessions); auto-backfill from timeseries",
+    7: "Phase 6 Ticket 6.1: analytical_cache table for fingerprinted caching of expensive analytical outputs",
 }
 
 
@@ -137,6 +138,27 @@ def apply_migrations(db: DuckDBManager) -> int:
             GROUP BY e.date, e.session_id
         """)
 
+        # v7 post-DDL fixup: clear the analytical_cache table whenever
+        # the schema version actually advances. The cached results were
+        # computed against an older shape; any schema bump invalidates
+        # the contract they depend on. Idempotent — on a fresh DB or a
+        # re-run at v7 the table is already empty so the DELETE is a
+        # no-op. Only fires when ``before_version < SCHEMA_VERSION`` to
+        # avoid clearing the cache on every server restart.
+        v7_cleared = 0
+        if before_version < 7 <= SCHEMA_VERSION:
+            try:
+                v7_cleared = conn.execute(
+                    "SELECT COUNT(*) FROM analytical_cache"
+                ).fetchone()[0]
+                conn.execute("DELETE FROM analytical_cache")
+            except Exception:
+                # On a fresh DB the table doesn't exist yet at the
+                # moment we're reading current_version. The CREATE TABLE
+                # IF NOT EXISTS up above already ran, so this should
+                # succeed; but be defensive.
+                v7_cleared = 0
+
         # v6 post-DDL fixup: backfill per-session pressure stats for any
         # sessions row where the cache is empty. Idempotent — skips rows
         # where pressure_median is already set, so re-running
@@ -184,6 +206,11 @@ def apply_migrations(db: DuckDBManager) -> int:
         logger.info(
             "Backfilled per-session pressure stats for %d session row(s)",
             backfill_touched,
+        )
+    if v7_cleared > 0:
+        logger.info(
+            "Cleared analytical_cache: %d entries invalidated by schema bump",
+            v7_cleared,
         )
 
     return SCHEMA_VERSION

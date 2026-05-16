@@ -18,11 +18,14 @@ date params.
 """
 from __future__ import annotations
 
+import logging
 from datetime import date as date_t
 from datetime import timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
+
+logger = logging.getLogger(__name__)
 
 from ..models.manual_logs import (
     AlertnessLog,
@@ -105,6 +108,7 @@ def create_manual_log(
     """
     db = request.app.state.db
     saved = manual_logs_repo.insert(db, entry)
+    _invalidate_analytical_cache_for_log_date(db, saved.date)
     return saved.model_dump(mode="json")
 
 
@@ -147,16 +151,43 @@ def update_manual_log(
     if saved is None:
         # Race — the row got deleted between our get_by_id and update.
         raise HTTPException(status_code=404, detail=f"No manual_log with id={log_id}")
+    # Phase 6 Ticket 6.1 — invalidate analytical_cache for both the old
+    # and new date (patches may change the date), since the cache may
+    # have stored analyses that reference either window.
+    _invalidate_analytical_cache_for_log_date(db, existing.date)
+    if saved.date != existing.date:
+        _invalidate_analytical_cache_for_log_date(db, saved.date)
     return saved.model_dump(mode="json")
 
 
 @router.delete("/{log_id}", status_code=204)
 def delete_manual_log(log_id: int, request: Request) -> None:
     db = request.app.state.db
+    existing = manual_logs_repo.get_by_id(db, log_id)
     deleted = manual_logs_repo.delete_by_id(db, log_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"No manual_log with id={log_id}")
+    if existing is not None:
+        _invalidate_analytical_cache_for_log_date(db, existing.date)
     return None
+
+
+# ---- Phase 6 Ticket 6.1 — analytical_cache invalidation helper. -----------
+
+
+def _invalidate_analytical_cache_for_log_date(db, log_date) -> None:
+    """A single-day cache invalidation. Manual-log mutations affect any
+    analytical query that overlaps the changed day. We call this from
+    create/patch/delete; cheap (the cache table is small) and non-fatal
+    (any cache-side error is logged but doesn't fail the CRUD op)."""
+    try:
+        from ..analytics.cache import AnalyticalCache
+        AnalyticalCache(db).invalidate_by_date_range(log_date, log_date)
+    except Exception:
+        logger.exception(
+            "analytical_cache invalidate failed for manual_log date=%s",
+            log_date,
+        )
 
 
 def _patch_to_row_columns(

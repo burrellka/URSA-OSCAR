@@ -19,12 +19,21 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
+from pydantic import BaseModel, Field
+
+from ..analytics.cache import AnalyticalCache, cached_compute
 from ..analytics.correlation import analyze_correlation as compute_correlation
 from ..analytics.manual_log_summary import summarize_manual_logs
 from ..analytics.metric_resolver import (
     UnknownMetricError,
     known_nightly_metrics,
     list_available_manual_metrics,
+)
+from ..analytics.lag import (
+    analyze_lag_correlation as compute_lag_correlation,
+)
+from ..analytics.multivariate import (
+    analyze_multivariate_correlation as compute_multivariate_correlation,
 )
 from ..analytics.period_compare import compare_periods as compute_compare_periods
 from ..analytics.trend import compute_trend
@@ -143,3 +152,206 @@ def available_metrics_endpoint(request: Request) -> dict[str, Any]:
         "nightly_metrics": known_nightly_metrics(),
         "manual_metrics": list_available_manual_metrics(db),
     }
+
+
+# -----------------------------------------------------------------------
+# Phase 6 Ticket 6.1 — multivariate (partial) correlation.
+# -----------------------------------------------------------------------
+
+
+class MultivariateCorrelationRequest(BaseModel):
+    """POST body for /analytics/multivariate-correlation."""
+    target_metric: str = Field(
+        description=(
+            "Outcome to explain. Bare nightly_summary column "
+            "(e.g., 'total_ahi') OR 'log_type:filter:field' "
+            "(e.g., 'alertness::score')."
+        ),
+    )
+    predictor_metrics: list[str] = Field(
+        description="2-5 candidate predictors. Same naming as target_metric.",
+        min_length=2, max_length=5,
+    )
+    start_date: date_t
+    end_date: date_t
+    recompute: bool = Field(
+        default=False,
+        description="Bypass the cache and force a fresh computation.",
+    )
+
+
+@router.post("/multivariate-correlation")
+def multivariate_correlation_endpoint(
+    body: MultivariateCorrelationRequest, request: Request,
+) -> dict[str, Any]:
+    """Partial correlation of each predictor with the target, controlling
+    for the others. Returns one row per predictor with partial r,
+    bootstrap 95% CI, p-value, interpretation, plus envelope metadata
+    (method, n_observations, confidence_level, cache_age_seconds).
+
+    Caches by SHA-256 fingerprint of
+    (tool_name + sorted_params_json + data_version_hash). Re-running
+    the same query against unchanged data returns the cached envelope
+    in O(ms). New imports or manual-log mutations in the date range
+    invalidate the entry; the next call recomputes.
+    """
+    if body.end_date < body.start_date:
+        raise HTTPException(status_code=400, detail="end_date must be >= start_date")
+
+    db = request.app.state.db
+    cache = AnalyticalCache(db)
+    params = {
+        "target_metric": body.target_metric,
+        "predictor_metrics": list(body.predictor_metrics),
+        "start_date": body.start_date.isoformat(),
+        "end_date": body.end_date.isoformat(),
+    }
+
+    with cached_compute(
+        cache,
+        tool_name="analyze_multivariate_correlation",
+        params=params,
+        start_date=body.start_date,
+        end_date=body.end_date,
+        recompute=body.recompute,
+    ) as ctx:
+        if ctx.hit:
+            return ctx.cached_result
+
+        try:
+            data = compute_multivariate_correlation(
+                db,
+                target_metric=body.target_metric,
+                predictor_metrics=list(body.predictor_metrics),
+                start=body.start_date,
+                end=body.end_date,
+            )
+        except UnknownMetricError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        # Don't cache refused / errored results — recompute on next call
+        # so the operator's "I added more data, let me try again" works.
+        envelope = {"ok": "code" not in data, "data": data}
+        if "code" not in data:
+            ctx.store(envelope)
+        return envelope
+
+
+# -----------------------------------------------------------------------
+# Phase 6 Ticket 6.1 Item 5 — analytical_cache stats + clear endpoints.
+# -----------------------------------------------------------------------
+
+
+@router.get("/cache/stats")
+def cache_stats_endpoint(request: Request) -> dict[str, Any]:
+    """Aggregate counts for the analytical_cache. Used by the Data
+    Management page's "Analytical cache" section + by operators
+    debugging stale-result complaints."""
+    db = request.app.state.db
+    return AnalyticalCache(db).stats()
+
+
+class CacheClearRequest(BaseModel):
+    confirm: bool = Field(
+        ..., description="Must be true to actually clear. Belt-and-suspenders.",
+    )
+
+
+@router.post("/cache/clear")
+def cache_clear_endpoint(
+    body: CacheClearRequest, request: Request,
+) -> dict[str, Any]:
+    """Wipe every analytical_cache entry. Cache auto-invalidates on
+    data changes; manual clearing is rarely necessary. Returns the
+    count cleared. Refuses if confirm is not explicitly true."""
+    if not body.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="confirm must be true to clear the cache",
+        )
+    db = request.app.state.db
+    n = AnalyticalCache(db).clear_all()
+    return {"entries_cleared": n}
+
+
+# -----------------------------------------------------------------------
+# Phase 6 Ticket 6.1 — time-shifted lag correlation with bootstrap CI.
+# -----------------------------------------------------------------------
+
+
+class LagCorrelationRequest(BaseModel):
+    """POST body for /analytics/lag-correlation."""
+    metric_a: str = Field(description="The hypothesized cause metric.")
+    metric_b: str = Field(description="The hypothesized effect metric.")
+    start_date: date_t
+    end_date: date_t
+    lag_range_days: list[int] = Field(
+        default=[-3, 7],
+        min_length=2, max_length=2,
+        description=(
+            "[lo, hi] inclusive lag window in days. Negative lags act as "
+            "a sanity check (effect before cause should be implausible)."
+        ),
+    )
+    bootstrap_samples: int = Field(default=1000, ge=100, le=5000)
+    recompute: bool = False
+
+
+@router.post("/lag-correlation")
+def lag_correlation_endpoint(
+    body: LagCorrelationRequest, request: Request,
+) -> dict[str, Any]:
+    """Cross-correlation function across a lag window with bootstrap
+    95% CIs at each lag. Useful for "how long after I take doxepin does
+    my AHI improve?" or "when does a pressure change take effect?"
+
+    Caches by SHA-256 fingerprint of (tool_name + params + data_version_hash)
+    just like the multivariate endpoint."""
+    if body.end_date < body.start_date:
+        raise HTTPException(status_code=400, detail="end_date must be >= start_date")
+    lo, hi = body.lag_range_days
+    if hi < lo:
+        raise HTTPException(
+            status_code=400,
+            detail=f"lag_range_days upper bound ({hi}) must be >= lower bound ({lo})",
+        )
+
+    db = request.app.state.db
+    cache = AnalyticalCache(db)
+    params = {
+        "metric_a": body.metric_a,
+        "metric_b": body.metric_b,
+        "start_date": body.start_date.isoformat(),
+        "end_date": body.end_date.isoformat(),
+        "lag_range_days": [lo, hi],
+        "bootstrap_samples": body.bootstrap_samples,
+    }
+
+    with cached_compute(
+        cache,
+        tool_name="analyze_lag_correlation",
+        params=params,
+        start_date=body.start_date,
+        end_date=body.end_date,
+        recompute=body.recompute,
+    ) as ctx:
+        if ctx.hit:
+            return ctx.cached_result
+
+        try:
+            data = compute_lag_correlation(
+                db,
+                metric_a=body.metric_a,
+                metric_b=body.metric_b,
+                start=body.start_date,
+                end=body.end_date,
+                lag_range=(lo, hi),
+                bootstrap_samples=body.bootstrap_samples,
+            )
+        except UnknownMetricError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        envelope = {"ok": "code" not in data, "data": data}
+        if "code" not in data:
+            ctx.store(envelope)
+        return envelope

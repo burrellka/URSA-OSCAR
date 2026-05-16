@@ -252,6 +252,36 @@ ALTER TABLE sessions ADD COLUMN IF NOT EXISTS leak_median       DOUBLE DEFAULT N
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS leak_p95          DOUBLE DEFAULT NULL;
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS leak_p995         DOUBLE DEFAULT NULL;
 
+-- v7 (Phase 6 Ticket 6.1, 2026-05-16) — analytical_cache table for
+-- fingerprinted caching of expensive analytical outputs. See
+-- analytics/cache.py for the AnalyticalCache class that owns this
+-- table. Fingerprint = SHA-256 of (tool_name, sorted_params_json,
+-- data_version_hash). Cache hit returns stored result with
+-- cache_age_seconds derived from computed_at.
+--
+-- Invalidation:
+--   - by_date_range: called after imports + manual_logs CRUD; clears
+--     entries whose params_json indicates an overlapping date range
+--   - clear_all: called from apply_migrations after any v7+ schema
+--     transition, since a schema change can shift the meaning of
+--     cached values
+CREATE TABLE IF NOT EXISTS analytical_cache (
+    fingerprint VARCHAR PRIMARY KEY,
+    tool_name VARCHAR NOT NULL,
+    params_json VARCHAR NOT NULL,
+    result_json VARCHAR NOT NULL,
+    data_version_hash VARCHAR NOT NULL,
+    computed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    compute_duration_ms DOUBLE NOT NULL,
+    cache_hits INTEGER NOT NULL DEFAULT 0,
+    last_accessed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_analytical_cache_tool
+    ON analytical_cache(tool_name);
+CREATE INDEX IF NOT EXISTS idx_analytical_cache_accessed
+    ON analytical_cache(last_accessed_at);
+
 -- `excluded_sessions` is the operator-facing "don't count this session
 -- in the night's stats" list. Inserts and deletes are both used —
 -- toggle = insert if absent, delete if present. recompute_summary

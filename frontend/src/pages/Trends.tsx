@@ -76,6 +76,16 @@ export default function Trends() {
             earliestDate={earliestDate}
             latestDate={latestDate}
           />
+          <MultivariateSection
+            metricOptions={allMetricOptions}
+            earliestDate={earliestDate}
+            latestDate={latestDate}
+          />
+          <LagSection
+            metricOptions={allMetricOptions}
+            earliestDate={earliestDate}
+            latestDate={latestDate}
+          />
         </>
       )}
     </div>
@@ -451,4 +461,427 @@ function resolveRange(
   const startDate = new Date(endDate);
   startDate.setDate(startDate.getDate() - days + 1);
   return { start: startDate.toISOString().slice(0, 10), end };
+}
+
+
+// =====================================================================
+// Phase 6 Ticket 6.1 — Multivariate (partial) correlation section.
+// =====================================================================
+
+
+function MultivariateSection({ metricOptions, earliestDate, latestDate }: {
+  metricOptions: string[]; earliestDate: string; latestDate: string;
+}) {
+  const [target, setTarget] = useState<string>(
+    metricOptions.includes('total_ahi') ? 'total_ahi' : metricOptions[0],
+  );
+  const [predictors, setPredictors] = useState<string[]>(
+    metricOptions.slice(0, 3).filter((m) => m !== 'total_ahi').slice(0, 2),
+  );
+  const [preset, setPreset] = useState<RangePreset>('90d');
+  const { start, end } = useMemo(
+    () => resolveRange(preset, earliestDate, latestDate),
+    [preset, earliestDate, latestDate],
+  );
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<Awaited<ReturnType<typeof api.multivariateCorrelation>> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  function togglePredictor(metric: string) {
+    if (predictors.includes(metric)) {
+      setPredictors(predictors.filter((p) => p !== metric));
+    } else if (predictors.length < 5) {
+      setPredictors([...predictors, metric]);
+    }
+  }
+
+  async function run() {
+    if (!target || predictors.length < 2 || !start || !end) return;
+    setLoading(true); setError(null);
+    try {
+      const r = await api.multivariateCorrelation({
+        target_metric: target,
+        predictor_metrics: predictors,
+        start_date: start,
+        end_date: end,
+      });
+      setResult(r);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const data = result?.data;
+  const refused = result && !result.ok;
+
+  return (
+    <div className="chart-card" style={{ marginTop: '1rem' }}>
+      <h2 style={{ fontSize: '1.0625rem', fontWeight: 600, marginTop: 0, marginBottom: '0.25rem' }}>
+        Multivariate analysis
+      </h2>
+      <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+        Partial correlation of each predictor with the target, controlling for
+        the others. Answers "is X really driving Y, or is something else doing
+        the work?"
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.5rem' }}>
+        <div className="field">
+          <label>Target metric</label>
+          <select value={target} onChange={(e) => setTarget(e.target.value)}>
+            {metricOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Range preset</label>
+          <select value={preset} onChange={(e) => setPreset(e.target.value as RangePreset)}>
+            <option value="7d">Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="90d">Last 90 days</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="field" style={{ marginBottom: '0.75rem' }}>
+        <label>
+          Predictor metrics (pick 2-5)
+          {' '}<span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
+            — selected: {predictors.length}
+          </span>
+        </label>
+        <div style={{
+          display: 'flex', flexWrap: 'wrap', gap: '0.375rem',
+          maxHeight: '7.5rem', overflowY: 'auto',
+          padding: '0.5rem', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: '6px',
+        }}>
+          {metricOptions
+            .filter((m) => m !== target)
+            .map((m) => {
+              const selected = predictors.includes(m);
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => togglePredictor(m)}
+                  className={selected ? 'btn-primary' : 'btn-secondary'}
+                  style={{
+                    fontSize: '0.75rem', padding: '0.25rem 0.5rem',
+                    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+                  }}
+                  disabled={!selected && predictors.length >= 5}
+                >
+                  {m}
+                </button>
+              );
+            })}
+        </div>
+      </div>
+
+      <button
+        type="button"
+        className="btn-primary"
+        onClick={run}
+        disabled={loading || predictors.length < 2 || !target}
+      >
+        {loading ? 'Analyzing…' : 'Analyze'}
+      </button>
+
+      {error && <div className="error-banner" style={{ marginTop: '0.75rem' }}>{error}</div>}
+
+      {refused && (
+        <div style={{ marginTop: '0.75rem', padding: '0.5rem 0.75rem',
+                      background: 'var(--bg-secondary, #f3f4f6)', borderRadius: '6px',
+                      fontSize: '0.8125rem' }}>
+          <strong>Insufficient data:</strong> {data?.error}
+        </div>
+      )}
+
+      {data && !refused && (
+        <div style={{ marginTop: '0.75rem' }}>
+          <table style={{
+            width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem',
+          }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-secondary, #f3f4f6)' }}>
+                <th style={{ padding: '0.4rem', textAlign: 'left' }}>Predictor</th>
+                <th style={{ padding: '0.4rem', textAlign: 'right' }}>Partial r</th>
+                <th style={{ padding: '0.4rem', textAlign: 'center' }}>95% CI</th>
+                <th style={{ padding: '0.4rem', textAlign: 'right' }}>p-value</th>
+                <th style={{ padding: '0.4rem', textAlign: 'left' }}>Interpretation</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(data.predictors || []).map((p) => (
+                <tr key={p.metric} style={{ borderTop: '1px solid var(--border-color, #e5e7eb)' }}>
+                  <td style={{ padding: '0.4rem', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>
+                    {p.metric}
+                  </td>
+                  <td style={{ padding: '0.4rem', textAlign: 'right' }}>
+                    {p.partial_r != null ? p.partial_r.toFixed(3) : '—'}
+                  </td>
+                  <td style={{ padding: '0.4rem', textAlign: 'center', fontSize: '0.75rem' }}>
+                    {p.ci_95[0] != null && p.ci_95[1] != null
+                      ? `[${p.ci_95[0]!.toFixed(2)}, ${p.ci_95[1]!.toFixed(2)}]`
+                      : '—'}
+                  </td>
+                  <td style={{ padding: '0.4rem', textAlign: 'right' }}>
+                    {p.p_value != null ? p.p_value.toFixed(3) : '—'}
+                  </td>
+                  <td style={{ padding: '0.4rem' }}>{p.interpretation}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div style={{
+            marginTop: '0.5rem', fontSize: '0.75rem', color: 'var(--text-muted)',
+          }}>
+            Method: {data.method} · n = {data.n_observations} · Confidence:{' '}
+            <strong>{data.confidence_level ?? '—'}</strong>
+            {data.cache_age_seconds != null && data.cache_age_seconds > 0 && (
+              <> · <em>cached {data.cache_age_seconds}s ago</em></>
+            )}
+          </div>
+          {data.sample_caveat && (
+            <div style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--ahi-warn, #d97706)' }}>
+              {data.sample_caveat}
+            </div>
+          )}
+          {data.multicollinear_pairs && data.multicollinear_pairs.length > 0 && (
+            <div style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--ahi-warn, #d97706)' }}>
+              <strong>Multicollinearity:</strong>{' '}
+              {data.multicollinear_pairs.map((pair, i) => (
+                <span key={i}>
+                  {pair.metric_a} ↔ {pair.metric_b} (r={pair.r.toFixed(2)})
+                  {i < data.multicollinear_pairs!.length - 1 ? '; ' : ''}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// =====================================================================
+// Phase 6 Ticket 6.1 — Time-shifted lag correlation section.
+// =====================================================================
+
+
+function LagSection({ metricOptions, earliestDate, latestDate }: {
+  metricOptions: string[]; earliestDate: string; latestDate: string;
+}) {
+  const [metricA, setMetricA] = useState<string>(metricOptions[0]);
+  const [metricB, setMetricB] = useState<string>(
+    metricOptions.includes('total_ahi') ? 'total_ahi' : metricOptions[1] || metricOptions[0],
+  );
+  const [preset, setPreset] = useState<RangePreset>('90d');
+  const [lagLo, setLagLo] = useState<number>(-3);
+  const [lagHi, setLagHi] = useState<number>(7);
+  const { start, end } = useMemo(
+    () => resolveRange(preset, earliestDate, latestDate),
+    [preset, earliestDate, latestDate],
+  );
+
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<Awaited<ReturnType<typeof api.lagCorrelation>> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run() {
+    if (!metricA || !metricB || !start || !end) return;
+    setLoading(true); setError(null);
+    try {
+      const r = await api.lagCorrelation({
+        metric_a: metricA,
+        metric_b: metricB,
+        start_date: start,
+        end_date: end,
+        lag_range_days: [lagLo, lagHi],
+      });
+      setResult(r);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const data = result?.data;
+  const refused = result && !result.ok;
+  // Find the largest |r| for scaling the bar visualization.
+  const maxAbsR = useMemo(() => {
+    if (!data?.lag_correlations) return 1;
+    const rs = data.lag_correlations
+      .map((c) => c.r)
+      .filter((v): v is number => v != null);
+    return rs.length > 0 ? Math.max(...rs.map(Math.abs), 0.1) : 1;
+  }, [data]);
+
+  return (
+    <div className="chart-card" style={{ marginTop: '1rem' }}>
+      <h2 style={{ fontSize: '1.0625rem', fontWeight: 600, marginTop: 0, marginBottom: '0.25rem' }}>
+        Lag analysis
+      </h2>
+      <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+        Cross-correlation function with bootstrap 95% CIs at each lag. Answers
+        "how long after X happens does the effect on Y show up?"
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem', marginBottom: '0.5rem' }}>
+        <div className="field">
+          <label>Cause (metric A)</label>
+          <select value={metricA} onChange={(e) => setMetricA(e.target.value)}>
+            {metricOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Effect (metric B)</label>
+          <select value={metricB} onChange={(e) => setMetricB(e.target.value)}>
+            {metricOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Range preset</label>
+          <select value={preset} onChange={(e) => setPreset(e.target.value as RangePreset)}>
+            <option value="7d">Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="90d">Last 90 days</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.5rem' }}>
+        <div className="field">
+          <label>Lag range — lower (days, neg = sanity check)</label>
+          <input
+            type="number"
+            value={lagLo}
+            min={-30} max={lagHi - 1}
+            onChange={(e) => setLagLo(parseInt(e.target.value, 10) || 0)}
+          />
+        </div>
+        <div className="field">
+          <label>Lag range — upper (days)</label>
+          <input
+            type="number"
+            value={lagHi}
+            min={lagLo + 1} max={30}
+            onChange={(e) => setLagHi(parseInt(e.target.value, 10) || 0)}
+          />
+        </div>
+      </div>
+
+      <button
+        type="button"
+        className="btn-primary"
+        onClick={run}
+        disabled={loading || !metricA || !metricB || metricA === metricB}
+      >
+        {loading ? 'Analyzing…' : 'Analyze'}
+      </button>
+
+      {error && <div className="error-banner" style={{ marginTop: '0.75rem' }}>{error}</div>}
+
+      {refused && (
+        <div style={{ marginTop: '0.75rem', padding: '0.5rem 0.75rem',
+                      background: 'var(--bg-secondary, #f3f4f6)', borderRadius: '6px',
+                      fontSize: '0.8125rem' }}>
+          <strong>Insufficient data:</strong> {data?.error}
+        </div>
+      )}
+
+      {data && !refused && data.lag_correlations.length > 0 && (
+        <div style={{ marginTop: '0.75rem' }}>
+          {data.clinical_note && (
+            <div style={{
+              marginBottom: '0.5rem', padding: '0.5rem 0.75rem',
+              background: 'var(--bg-secondary, #f3f4f6)', borderRadius: '6px',
+              fontSize: '0.8125rem',
+            }}>
+              <strong>Peak:</strong> {data.clinical_note}
+            </div>
+          )}
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.8125rem' }}>
+            <thead>
+              <tr style={{ background: 'var(--bg-secondary, #f3f4f6)' }}>
+                <th style={{ padding: '0.4rem', textAlign: 'right' }}>Lag</th>
+                <th style={{ padding: '0.4rem', textAlign: 'right' }}>r</th>
+                <th style={{ padding: '0.4rem', textAlign: 'left' }}>Bar (relative)</th>
+                <th style={{ padding: '0.4rem', textAlign: 'center' }}>95% CI</th>
+                <th style={{ padding: '0.4rem', textAlign: 'right' }}>n</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.lag_correlations.map((c) => {
+                const isPeak = c.lag_days === data.peak_lag_days;
+                const widthPct = c.r != null ? Math.abs(c.r) / maxAbsR * 50 : 0;
+                const barColor = c.r != null && c.r < 0 ? 'var(--ahi-bad, #dc2626)' : 'var(--accent-primary, #2563eb)';
+                return (
+                  <tr key={c.lag_days} style={{
+                    borderTop: '1px solid var(--border-color, #e5e7eb)',
+                    background: isPeak ? 'var(--bg-secondary, #f3f4f6)' : undefined,
+                    fontWeight: isPeak ? 600 : undefined,
+                  }}>
+                    <td style={{ padding: '0.4rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                      {c.lag_days > 0 ? `+${c.lag_days}` : c.lag_days}d
+                    </td>
+                    <td style={{ padding: '0.4rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                      {c.r != null ? c.r.toFixed(3) : '—'}
+                    </td>
+                    <td style={{ padding: '0.4rem' }}>
+                      {c.r != null && (
+                        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+                          <div style={{ width: '50%', borderRight: '1px solid var(--text-muted)', height: '0.625rem', position: 'relative' }}>
+                            {c.r < 0 && (
+                              <div style={{
+                                position: 'absolute', right: 0, top: 0, height: '100%',
+                                width: `${widthPct * 2}%`, background: barColor,
+                              }} />
+                            )}
+                          </div>
+                          <div style={{ width: '50%', height: '0.625rem', position: 'relative' }}>
+                            {c.r >= 0 && (
+                              <div style={{
+                                position: 'absolute', left: 0, top: 0, height: '100%',
+                                width: `${widthPct * 2}%`, background: barColor,
+                              }} />
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: '0.4rem', textAlign: 'center', fontSize: '0.75rem' }}>
+                      {c.ci_95[0] != null && c.ci_95[1] != null
+                        ? `[${c.ci_95[0]!.toFixed(2)}, ${c.ci_95[1]!.toFixed(2)}]`
+                        : '—'}
+                    </td>
+                    <td style={{ padding: '0.4rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                      {c.n_aligned}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            Method: {data.method} · n = {data.n_observations} · Confidence:{' '}
+            <strong>{data.confidence_level ?? '—'}</strong>
+            {data.cache_age_seconds != null && data.cache_age_seconds > 0 && (
+              <> · <em>cached {data.cache_age_seconds}s ago</em></>
+            )}
+          </div>
+          {data.sample_caveat && (
+            <div style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--ahi-warn, #d97706)' }}>
+              {data.sample_caveat}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }

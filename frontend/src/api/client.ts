@@ -227,6 +227,103 @@ export const api = {
   }) => request<ManualLogSummaryResult>(`${BASE}/analytics/manual-log-summary`, {}, params),
 
   // =====================================================================
+  // Phase 6 Ticket 6.1 — multivariate + lag + cache stats.
+  // =====================================================================
+
+  multivariateCorrelation: (body: {
+    target_metric: string;
+    predictor_metrics: string[];
+    start_date: string;
+    end_date: string;
+    recompute?: boolean;
+  }) =>
+    request<{
+      ok: boolean;
+      data: {
+        method: string;
+        target_metric: string;
+        predictors: Array<{
+          metric: string;
+          partial_r: number | null;
+          p_value: number | null;
+          ci_95: [number | null, number | null];
+          interpretation: string;
+          note?: string;
+        }>;
+        controlled_for: string[];
+        n_observations: number;
+        confidence_level?: string;
+        sample_caveat?: string | null;
+        bootstrap_samples?: number;
+        multicollinear_pairs?: Array<{ metric_a: string; metric_b: string; r: number; note: string }>;
+        cache_age_seconds?: number;
+        computed_at?: string;
+        code?: string;
+        error?: string;
+      };
+    }>(`${BASE}/analytics/multivariate-correlation`, {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+
+  lagCorrelation: (body: {
+    metric_a: string;
+    metric_b: string;
+    start_date: string;
+    end_date: string;
+    lag_range_days?: [number, number];
+    bootstrap_samples?: number;
+    recompute?: boolean;
+  }) =>
+    request<{
+      ok: boolean;
+      data: {
+        method: string;
+        metric_a: string;
+        metric_b: string;
+        lag_range: [number, number];
+        lag_correlations: Array<{
+          lag_days: number;
+          r: number | null;
+          p_value: number | null;
+          ci_95: [number | null, number | null];
+          n_aligned: number;
+          note?: string;
+        }>;
+        peak_lag_days: number | null;
+        peak_correlation: number | null;
+        peak_p_value: number | null;
+        interpretation: string;
+        clinical_note: string | null;
+        n_observations: number;
+        confidence_level?: string;
+        sample_caveat?: string | null;
+        bootstrap_samples?: number;
+        cache_age_seconds?: number;
+        computed_at?: string;
+        code?: string;
+        error?: string;
+      };
+    }>(`${BASE}/analytics/lag-correlation`, {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+
+  getAnalyticalCacheStats: () =>
+    request<{
+      total_entries: number;
+      total_hits: number;
+      cache_hit_rate: number;
+      oldest_entry_age_seconds: number;
+      largest_entry_bytes: number;
+      by_tool: Record<string, { entries: number; hits: number; avg_compute_ms: number }>;
+    }>(`${BASE}/analytics/cache/stats`),
+
+  clearAnalyticalCache: () =>
+    request<{ entries_cleared: number }>(`${BASE}/analytics/cache/clear`, {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
+    }),
+
+  // =====================================================================
   // Phase 3 hard-delete purge.
   // =====================================================================
   previewDelete: (start_date: string, end_date: string) =>

@@ -192,6 +192,116 @@ TOOL_DESCRIPTORS: list[dict] = [
         },
     },
     {
+        # Phase 6 Ticket 6.1 Item 2.
+        "type": "function",
+        "function": {
+            "name": "analyze_multivariate_correlation",
+            "description": (
+                "Partial correlation of each predictor with a target metric, "
+                "controlling for the other predictors. Use when the user "
+                "asks 'is X really driving Y after accounting for Z' "
+                "questions — e.g., 'is doxepin really helping my AHI or "
+                "is it the pressure changes?' Pairwise correlation can't "
+                "disentangle multiple candidate causes; this can. Returns "
+                "per-predictor partial r + bootstrap 95% CI + p-value + "
+                "confidence level. REFUSES if n < 15 (returns ok=false "
+                "with INSUFFICIENT_DATA). Surfaces the confidence_level "
+                "field; the assistant should mention it when relaying "
+                "results ('moderate confidence — 47 observations'). "
+                "If a predictor's CI spans zero, say the effect isn't "
+                "statistically distinguishable from noise."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_metric": {
+                        "type": "string",
+                        "description": (
+                            "Outcome to explain. Same naming as "
+                            "analyze_correlation — bare nightly column "
+                            "(e.g., 'total_ahi') OR 'log_type:filter:field'."
+                        ),
+                    },
+                    "predictor_metrics": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "2-5 candidate predictors to test simultaneously. "
+                            "Same naming as target_metric."
+                        ),
+                    },
+                    "start_date": {"type": "string"},
+                    "end_date": {"type": "string"},
+                    "recompute": {
+                        "type": "boolean",
+                        "description": (
+                            "Optional: bypass the cache and force a fresh "
+                            "computation. Default false."
+                        ),
+                    },
+                },
+                "required": [
+                    "target_metric", "predictor_metrics",
+                    "start_date", "end_date",
+                ],
+            },
+        },
+    },
+    {
+        # Phase 6 Ticket 6.1 Item 3.
+        "type": "function",
+        "function": {
+            "name": "analyze_lag_correlation",
+            "description": (
+                "Time-shifted Pearson correlation across a lag window "
+                "(default -3 to +7 days) with bootstrap 95% CIs at each "
+                "lag. Use when the user asks about DELAYED effects: "
+                "'how long after I take doxepin does it start working?', "
+                "'does last night's alcohol still affect tonight's AHI?', "
+                "'when does a pressure change actually take effect?'. "
+                "Returns one row per lag plus a peak_lag_days summary. "
+                "Negative lags are sanity checks (effect before cause). "
+                "CIs that span zero mean no real effect at that lag. "
+                "REFUSES if n < 15 (returns ok=false with INSUFFICIENT_DATA)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "metric_a": {
+                        "type": "string",
+                        "description": (
+                            "Hypothesized cause. Same naming as "
+                            "analyze_correlation."
+                        ),
+                    },
+                    "metric_b": {
+                        "type": "string",
+                        "description": "Hypothesized effect.",
+                    },
+                    "start_date": {"type": "string"},
+                    "end_date": {"type": "string"},
+                    "lag_range_days": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": (
+                            "[lo, hi] lag window. Default [-3, 7]. "
+                            "Span <= 60 days."
+                        ),
+                    },
+                    "bootstrap_samples": {
+                        "type": "integer",
+                        "description": "Default 1000.",
+                    },
+                    "recompute": {
+                        "type": "boolean",
+                        "description": "Bypass cache. Default false.",
+                    },
+                },
+                "required": ["metric_a", "metric_b", "start_date", "end_date"],
+            },
+        },
+    },
+    {
         "type": "function",
         "function": {
             "name": "get_trend",
@@ -341,6 +451,11 @@ def _path_only(arg_names: list[str]):
     return _builder
 
 
+def _body_only(args: dict) -> tuple[dict, dict, dict | None]:
+    """Builder for POST endpoints — all args land in the JSON body."""
+    return ({}, {}, dict(args))
+
+
 _TOOL_ROUTING: dict[str, dict] = {
     "get_nightly_summary": {
         "method": "GET",
@@ -371,6 +486,21 @@ _TOOL_ROUTING: dict[str, dict] = {
         "method": "GET",
         "path": "/api/v1/analytics/correlation",
         "builder": _no_body,
+    },
+    # Phase 6 Ticket 6.1 Item 2 — multivariate (partial) correlation.
+    # POST body shape; arguments forwarded verbatim into the JSON body.
+    # The endpoint already returns {ok, data} so execute_tool's _ok()
+    # wrap reads as a passthrough.
+    "analyze_multivariate_correlation": {
+        "method": "POST",
+        "path": "/api/v1/analytics/multivariate-correlation",
+        "builder": _body_only,
+    },
+    # Phase 6 Ticket 6.1 Item 3 — time-shifted lag correlation.
+    "analyze_lag_correlation": {
+        "method": "POST",
+        "path": "/api/v1/analytics/lag-correlation",
+        "builder": _body_only,
     },
     "get_trend": {
         "method": "GET",

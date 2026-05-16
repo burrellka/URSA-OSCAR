@@ -27,18 +27,20 @@ mcp = FastMCP("URSA-OSCAR", auth=_auth_provider)
 # Adding a new tool = new file in tools/ + an import here.
 from .tools import (  # noqa: E402 (import after FastMCP instantiation is required)
     ahi_breakdown,
-    analyze_correlation,    # Phase 3 Item 5B (Tier 2)
-    compare_periods,        # Phase 3 Item 5A (Tier 2)
+    analyze_correlation,                # Phase 3 Item 5B (Tier 2)
+    analyze_lag_correlation,            # Phase 6 Ticket 6.1 Item 3
+    analyze_multivariate_correlation,   # Phase 6 Ticket 6.1 Item 2
+    compare_periods,                    # Phase 3 Item 5A (Tier 2)
     event_distribution,
-    get_manual_log_summary, # Phase 3 Item 5D (Tier 2)
-    get_trend,              # Phase 3 Item 5C (Tier 2)
+    get_manual_log_summary,             # Phase 3 Item 5D (Tier 2)
+    get_trend,                          # Phase 3 Item 5C (Tier 2)
     leak_profile,
     list_nights,
     nightly_summary,
     pressure_profile,
     session_breakdown,
     trigger_import,
-    user_profile,           # Phase 3 Item 5E (Tier 1)
+    user_profile,                       # Phase 3 Item 5E (Tier 1)
 )
 
 

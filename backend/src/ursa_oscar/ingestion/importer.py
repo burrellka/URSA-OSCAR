@@ -364,6 +364,28 @@ def import_path(
         # empty source (0 new, 0 known, 0 errors). Both are benign.
         status = "completed"
 
+    # Phase 6 Ticket 6.1 — invalidate analytical_cache entries whose
+    # cached date range overlaps with the imported nights. Cheap call;
+    # the cache table is small and the helper is parse-once + delete-
+    # batch. Wrapped in try/except so a transient cache-table issue
+    # can never block an otherwise-successful import.
+    if has_imported and earliest is not None and latest is not None:
+        try:
+            from ..analytics.cache import AnalyticalCache
+            cache = AnalyticalCache(db)
+            n = cache.invalidate_by_date_range(earliest.date, latest.date)
+            if n > 0:
+                print(
+                    f"  cache: invalidated {n} analytical_cache entr(ies) "
+                    f"overlapping [{earliest.date}, {latest.date}]"
+                )
+        except Exception as e:
+            print(
+                f"  cache: invalidate_by_date_range failed (non-fatal): "
+                f"{type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
+
     return ImportLogEntry(
         source_path=str(source_path),
         nights_imported=nights_imported,

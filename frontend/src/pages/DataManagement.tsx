@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { AlertTriangle, Trash2, RefreshCw, Database } from 'lucide-react';
+import { useCallback, useEffect, useState } from 'react';
+import { AlertTriangle, Trash2, RefreshCw, Database, BarChart3 } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type {
   PreviewDeleteResult,
@@ -46,9 +46,43 @@ export default function DataManagement() {
     db_size_before_mb: number | null; db_size_after_mb: number | null;
   } | null>(null);
 
+  // Phase 6 Ticket 6.1 — analytical cache stats + clear.
+  const [cacheStats, setCacheStats] = useState<Awaited<ReturnType<typeof api.getAnalyticalCacheStats>> | null>(null);
+  const [cacheLoading, setCacheLoading] = useState(false);
+  const [cacheClearConfirm, setCacheClearConfirm] = useState('');
+  const [cacheClearing, setCacheClearing] = useState(false);
+
+  const refreshCacheStats = useCallback(async () => {
+    setCacheLoading(true);
+    try {
+      const s = await api.getAnalyticalCacheStats();
+      setCacheStats(s);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setCacheLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     api.getSystemConfig().then(setConfig).catch((e: ApiError) => setError(e.message));
-  }, []);
+    refreshCacheStats();
+  }, [refreshCacheStats]);
+
+  async function handleClearCache() {
+    if (cacheClearConfirm !== 'CLEAR') return;
+    setCacheClearing(true);
+    try {
+      const r = await api.clearAnalyticalCache();
+      showToast(`Cleared ${r.entries_cleared} analytical-cache entr${r.entries_cleared === 1 ? 'y' : 'ies'}.`);
+      setCacheClearConfirm('');
+      await refreshCacheStats();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setCacheClearing(false);
+    }
+  }
 
   function showToast(msg: string) {
     setToast(msg);
@@ -291,6 +325,115 @@ export default function DataManagement() {
           Note: DuckDB's CHECKPOINT persists WAL into the main file. Disk space reclamation within the
           allocator happens over time as future inserts reuse freed blocks — the file may not shrink
           immediately after a delete.
+        </div>
+      </div>
+
+      {/* --- Section C: Analytical cache (Phase 6 Ticket 6.1) ---------------- */}
+      <div className="chart-card" style={{ marginTop: '1rem' }}>
+        <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <BarChart3 size={16} />
+          Analytical cache
+        </h2>
+        <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+          Cached results from <code>analyze_multivariate_correlation</code>,
+          {' '}<code>analyze_lag_correlation</code>, and future analytical
+          tools. Auto-invalidates when nightly summaries or manual logs
+          change in the cached date range. Manual clearing is rarely
+          necessary.
+        </div>
+
+        {cacheStats && (
+          <table className="data-table" style={{ marginBottom: '0.5rem', maxWidth: '32rem' }}>
+            <tbody>
+              <tr>
+                <td style={{ color: 'var(--text-secondary)' }}>Entries</td>
+                <td>{cacheStats.total_entries}</td>
+              </tr>
+              <tr>
+                <td style={{ color: 'var(--text-secondary)' }}>Total cache hits</td>
+                <td>{cacheStats.total_hits}</td>
+              </tr>
+              <tr>
+                <td style={{ color: 'var(--text-secondary)' }}>Hit rate</td>
+                <td>{(cacheStats.cache_hit_rate * 100).toFixed(1)}%</td>
+              </tr>
+              <tr>
+                <td style={{ color: 'var(--text-secondary)' }}>Oldest entry age</td>
+                <td>{cacheStats.oldest_entry_age_seconds}s</td>
+              </tr>
+              <tr>
+                <td style={{ color: 'var(--text-secondary)' }}>Largest entry</td>
+                <td>{(cacheStats.largest_entry_bytes / 1024).toFixed(1)} KB</td>
+              </tr>
+            </tbody>
+          </table>
+        )}
+
+        {cacheStats && Object.keys(cacheStats.by_tool).length > 0 && (
+          <details style={{ marginBottom: '0.625rem' }}>
+            <summary style={{ cursor: 'pointer', fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+              Breakdown by tool ({Object.keys(cacheStats.by_tool).length})
+            </summary>
+            <table className="data-table" style={{ marginTop: '0.5rem', maxWidth: '40rem' }}>
+              <thead>
+                <tr>
+                  <th>Tool</th>
+                  <th style={{ textAlign: 'right' }}>Entries</th>
+                  <th style={{ textAlign: 'right' }}>Hits</th>
+                  <th style={{ textAlign: 'right' }}>Avg compute (ms)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(cacheStats.by_tool).map(([name, s]) => (
+                  <tr key={name}>
+                    <td><code>{name}</code></td>
+                    <td style={{ textAlign: 'right' }}>{s.entries}</td>
+                    <td style={{ textAlign: 'right' }}>{s.hits}</td>
+                    <td style={{ textAlign: 'right' }}>{s.avg_compute_ms.toFixed(1)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </details>
+        )}
+
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={cacheLoading}
+            onClick={refreshCacheStats}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}
+          >
+            <RefreshCw size={14} className={cacheLoading ? 'spin' : undefined} />
+            Refresh stats
+          </button>
+          <input
+            type="text"
+            value={cacheClearConfirm}
+            onChange={(e) => setCacheClearConfirm(e.target.value)}
+            placeholder='Type CLEAR to enable clear button'
+            style={{ fontSize: '0.8125rem', maxWidth: '14rem' }}
+          />
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={cacheClearConfirm !== 'CLEAR' || cacheClearing}
+            onClick={handleClearCache}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '0.375rem',
+              color: cacheClearConfirm === 'CLEAR' ? 'var(--ahi-bad, #dc2626)' : undefined,
+            }}
+          >
+            <Trash2 size={14} />
+            {cacheClearing ? 'Clearing…' : 'Clear cache'}
+          </button>
+        </div>
+
+        <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+          The cache auto-invalidates when underlying data changes — clearing
+          is mostly useful for debugging or after a code change that affects
+          how analytical methods compute.
         </div>
       </div>
 

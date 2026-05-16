@@ -22,6 +22,12 @@ dependencies = [
     # and linregress (slope + r² + p-value + stderr) for /analytics/trend.
     # numpy + pandas already handle the aggregation paths.
     "scipy>=1.14",
+    # Phase 6 Ticket 6.1 — multivariate (partial) correlation uses sklearn's
+    # LinearRegression to compute residuals before the final Pearson
+    # call. Could be hand-rolled with numpy.linalg.lstsq but the sklearn
+    # API is what every reference implementation uses, so adopting it
+    # makes the code easier to validate against the literature.
+    "scikit-learn>=1.5",
     "watchdog>=4.0",
     "python-multipart>=0.0.27",
     # Phase-2-polish Item 5: /api/v1/system/verify-mcp hits the MCP container
