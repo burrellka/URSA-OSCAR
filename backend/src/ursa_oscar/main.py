@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .ai_proxy.config_store import ConfigStore as AiConfigStore
+from .ai_proxy.prompt import TemplateStore as AiTemplateStore
 from .ai_proxy.secrets import SecretStore, resolve_secret_key
 from .api import (
     ai, analytics, events, exports, exports_oscar, health, imports,
@@ -62,6 +63,13 @@ async def lifespan(app: FastAPI):
     )
     app.state.ai_config_store = AiConfigStore(
         store_path=data_dir / "ai_config.json",
+    )
+    # 0.9.10 — file-backed editable system-prompt template. First read
+    # returns the in-code DEFAULT_TEMPLATE; first "Save to template" via
+    # the Settings UI writes the file, after which the operator's edits
+    # are durable.
+    app.state.ai_template_store = AiTemplateStore(
+        store_path=data_dir / "system_prompt_template.txt",
     )
 
     worker = ImportWorker(db)

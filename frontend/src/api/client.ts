@@ -343,6 +343,22 @@ export const api = {
       body: JSON.stringify(patch),
     }),
 
+  // 0.9.10 — file-backed editable system-prompt template.
+  // GET returns the current content + a `source` flag ('default' on a
+  // fresh install, 'file' after the operator has saved one). PUT
+  // persists the new content; subsequent chat sessions without a
+  // per-provider override read from it at runtime.
+  getSystemPromptTemplate: () =>
+    request<{ template: string; source: 'default' | 'file' }>(
+      `${BASE}/ai/system-prompt/template`,
+    ),
+
+  setSystemPromptTemplate: (template: string) =>
+    request<{ template: string; source: 'default' | 'file' }>(
+      `${BASE}/ai/system-prompt/template`,
+      { method: 'PUT', body: JSON.stringify({ template }) },
+    ),
+
   testAiProvider: (provider_id: string) =>
     request<AiTestResult>(`${BASE}/ai/test`, {
       method: 'POST',

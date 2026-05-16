@@ -491,6 +491,189 @@ def test_config_patch_invalid_provider_rejected(ai_test_client):
     assert r.status_code == 400
 
 
+# -------------------------------------------------------------------------
+# /ai/system-prompt/template — 0.9.10. File-backed editable template.
+# -------------------------------------------------------------------------
+
+
+def test_template_store_first_read_returns_default(tmp_path):
+    """A fresh TemplateStore with no file on disk returns the in-code
+    DEFAULT_TEMPLATE with source='default'."""
+    from ursa_oscar.ai_proxy.prompt import DEFAULT_TEMPLATE, TemplateStore
+    store = TemplateStore(tmp_path / "system_prompt_template.txt")
+    text, source = store.get_template()
+    assert source == "default"
+    assert text == DEFAULT_TEMPLATE
+    assert not store.path.exists(), "GET shouldn't create the file"
+
+
+def test_template_store_set_then_get_returns_file(tmp_path):
+    """After set_template(), get_template() returns the stored content
+    with source='file'."""
+    from ursa_oscar.ai_proxy.prompt import TemplateStore
+    store = TemplateStore(tmp_path / "system_prompt_template.txt")
+    store.set_template("custom template body\nwith newlines\n")
+    text, source = store.get_template()
+    assert source == "file"
+    assert text == "custom template body\nwith newlines\n"
+    # File written + cleaned up the .tmp sibling from the atomic write.
+    assert store.path.exists()
+    assert not store.path.with_suffix(".txt.tmp").exists()
+
+
+def test_template_store_reset_drops_file(tmp_path):
+    """reset() removes the file so future reads return the default."""
+    from ursa_oscar.ai_proxy.prompt import DEFAULT_TEMPLATE, TemplateStore
+    store = TemplateStore(tmp_path / "system_prompt_template.txt")
+    store.set_template("temp content")
+    assert store.path.exists()
+    store.reset()
+    assert not store.path.exists()
+    text, source = store.get_template()
+    assert source == "default" and text == DEFAULT_TEMPLATE
+
+
+def test_template_endpoint_get_returns_default_on_fresh_install(ai_test_client):
+    """GET /api/v1/ai/system-prompt/template on a fresh install (no
+    file on disk yet) returns the DEFAULT_TEMPLATE with source='default'.
+    The Settings UI uses 'source' to render a 'Using built-in default' badge."""
+    from ursa_oscar.ai_proxy.prompt import DEFAULT_TEMPLATE
+    r = ai_test_client.get("/api/v1/ai/system-prompt/template")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["source"] == "default"
+    assert body["template"] == DEFAULT_TEMPLATE
+
+
+def test_template_endpoint_put_persists_then_get_returns_file(ai_test_client):
+    """PUT writes the file; the next GET returns the new content with
+    source='file'. This is the round-trip the Settings UI does when the
+    operator clicks 'Save to template'."""
+    new_text = "Operator's edited template.\n\nUser context: {user_profile_summary}\n"
+    r = ai_test_client.put(
+        "/api/v1/ai/system-prompt/template",
+        json={"template": new_text},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["source"] == "file"
+    assert body["template"] == new_text
+
+    # GET after PUT returns the same content from the file.
+    r2 = ai_test_client.get("/api/v1/ai/system-prompt/template")
+    assert r2.status_code == 200
+    assert r2.json()["template"] == new_text
+    assert r2.json()["source"] == "file"
+
+
+def test_chat_uses_template_store_when_no_per_provider_override(
+    ai_test_client, monkeypatch,
+):
+    """0.9.10 runtime-wiring regression — when cfg.custom_system_prompt
+    is unset, the chat endpoint must read its system prompt from the
+    TemplateStore. The 'Save to template' operator action affects every
+    subsequent chat session that doesn't have a per-provider override."""
+    # Operator wrote a distinctive marker into the template file.
+    sentinel = "OPERATOR-EDITED-TEMPLATE-MARKER-12345"
+    r = ai_test_client.put(
+        "/api/v1/ai/system-prompt/template",
+        json={"template": sentinel + "\n{user_profile_summary}\n"},
+    )
+    assert r.status_code == 200
+
+    # Enable AI with a Claude provider but no custom_system_prompt override.
+    r = ai_test_client.post("/api/v1/ai/config", json={
+        "enabled": True,
+        "provider_id": "claude",
+        "model": "claude-sonnet-4-5-20250929",
+        "api_key": "sk-ant-test-fake",
+        "custom_system_prompt": "",  # explicitly empty -> use template store
+    })
+    assert r.status_code == 200, r.text
+
+    # Hijack the adapter to capture the system_prompt argument it
+    # receives, so we can assert the runtime resolved it from the
+    # template store.
+    import ursa_oscar.api.ai as ai_module
+    captured: dict = {}
+
+    class _CapturingAdapter:
+        async def chat(self, messages, tools, system_prompt):
+            captured["system_prompt"] = system_prompt
+            # Emit a minimal end-of-stream so the SSE loop terminates.
+            from ursa_oscar.ai_proxy.providers.base import AiStreamEvent
+            yield AiStreamEvent(
+                event_type="complete",
+                payload={"stop_reason": "end_turn", "usage": {}},
+            )
+
+    monkeypatch.setattr(
+        ai_module, "build_adapter",
+        lambda *_a, **_kw: _CapturingAdapter(),
+    )
+
+    r = ai_test_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert r.status_code == 200
+    assert sentinel in captured.get("system_prompt", ""), (
+        "Expected the runtime to render the template-store content into "
+        "the system prompt when no per-provider override is set. Got: "
+        f"{captured.get('system_prompt', '')[:200]!r}"
+    )
+
+
+def test_chat_per_provider_override_still_wins_over_template_store(
+    ai_test_client, monkeypatch,
+):
+    """If the operator HAS set a per-provider override (cfg.custom_system_prompt),
+    that still beats whatever's in the template file. The override is
+    the most specific knob and stays on top."""
+    template_sentinel = "TEMPLATE-FILE-CONTENT"
+    override_sentinel = "PER-PROVIDER-OVERRIDE-CONTENT"
+
+    ai_test_client.put(
+        "/api/v1/ai/system-prompt/template",
+        json={"template": template_sentinel + "\n"},
+    )
+    r = ai_test_client.post("/api/v1/ai/config", json={
+        "enabled": True,
+        "provider_id": "claude",
+        "model": "claude-sonnet-4-5-20250929",
+        "api_key": "sk-ant-test-fake",
+        "custom_system_prompt": override_sentinel,
+    })
+    assert r.status_code == 200
+
+    import ursa_oscar.api.ai as ai_module
+    captured: dict = {}
+
+    class _CapturingAdapter:
+        async def chat(self, messages, tools, system_prompt):
+            captured["system_prompt"] = system_prompt
+            from ursa_oscar.ai_proxy.providers.base import AiStreamEvent
+            yield AiStreamEvent(
+                event_type="complete",
+                payload={"stop_reason": "end_turn", "usage": {}},
+            )
+
+    monkeypatch.setattr(
+        ai_module, "build_adapter",
+        lambda *_a, **_kw: _CapturingAdapter(),
+    )
+
+    r = ai_test_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "hi"}],
+    })
+    assert r.status_code == 200
+    prompt = captured.get("system_prompt", "")
+    assert override_sentinel in prompt
+    assert template_sentinel not in prompt, (
+        "Per-provider override should suppress the template-file content "
+        "entirely, not append to it."
+    )
+
+
 def test_chat_rejected_when_disabled(ai_test_client):
     """Default config has enabled=False — chat should 400 with the
     operator-friendly message that points them at Settings."""

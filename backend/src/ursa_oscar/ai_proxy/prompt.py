@@ -9,12 +9,32 @@ when querying tools).
 Custom-prompt support: the operator can override the entire template
 via Settings → AI Assistant → Custom system prompt. When unset, the
 default template below is used.
+
+0.9.10 — adds a file-backed ``TemplateStore`` so the operator can
+see + edit the template itself (not just the per-provider override).
+Storage at ``/data/system_prompt_template.txt`` mirrors the existing
+master.key + secrets.enc + profile.json pattern. First read seeds
+from the in-code DEFAULT_TEMPLATE constant; subsequent reads return
+the file. The Settings UI reads via the store + offers a
+"Save to template" button that writes to the same store.
+
+At runtime, the chat endpoint resolves the active system prompt in
+this order:
+  1. ``cfg.custom_system_prompt`` (per-provider override) — if non-empty
+  2. ``TemplateStore.get_template()`` — file-backed template
+  3. ``DEFAULT_TEMPLATE`` — in-code fallback (only when the store has
+     never been written to)
 """
 from __future__ import annotations
 
+import logging
+import os
 from datetime import date as date_t
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
 
 
 DEFAULT_TEMPLATE = """You are URSA, the AI sleep and health assistant embedded in URSA-OSCAR.
@@ -302,3 +322,83 @@ def _format_lenient(template: str, context: dict[str, Any]) -> str:
             return "{" + k + "}"
 
     return string.Formatter().vformat(template, (), _DefaultDict(context))
+
+
+# -------------------------------------------------------------------------
+# TemplateStore — 0.9.10. File-backed editable system-prompt template.
+# -------------------------------------------------------------------------
+
+
+TemplateSource = Literal["file", "default"]
+
+
+class TemplateStore:
+    """Manages ``/data/system_prompt_template.txt``. The Settings UI
+    reads via :meth:`get_template` (which returns the file content or
+    the in-code default), and writes via :meth:`set_template` when the
+    operator clicks "Save to template".
+
+    The runtime chat path also reads via :meth:`get_template_text` when
+    no per-config override is set, so any "Save to template" the
+    operator does immediately changes the baseline prompt every
+    provider uses (unless that provider has its own override).
+
+    No in-memory cache — reads hit the filesystem each time. The file
+    is small (a few KB), reads are infrequent (once per chat-session
+    start, once per Settings page load), and avoiding caching keeps
+    "operator edited the file by hand on the host" working without
+    needing a restart.
+    """
+
+    def __init__(self, store_path: Path) -> None:
+        self._path = store_path
+
+    @property
+    def path(self) -> Path:
+        return self._path
+
+    def get_template(self) -> tuple[str, TemplateSource]:
+        """Return ``(content, source)``. ``source`` is ``"file"`` if the
+        operator has stored a template, ``"default"`` if we fell back to
+        the in-code DEFAULT_TEMPLATE constant."""
+        try:
+            text = self._path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return DEFAULT_TEMPLATE, "default"
+        except OSError as e:
+            logger.exception(
+                "TemplateStore.get_template: read failed at %s; "
+                "falling back to in-code default: %s", self._path, e,
+            )
+            return DEFAULT_TEMPLATE, "default"
+        return text, "file"
+
+    def get_template_text(self) -> str:
+        """Convenience for the chat-runtime path — just the text."""
+        text, _source = self.get_template()
+        return text
+
+    def set_template(self, text: str) -> None:
+        """Atomically replace the template file with ``text``. Writes to
+        a sibling .tmp file first then renames, so a crash mid-write
+        can't leave a half-written template on disk."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        # POSIX rename is atomic on the same filesystem. On Windows
+        # Path.replace() also gives atomic semantics.
+        os.replace(tmp, self._path)
+        logger.info(
+            "TemplateStore.set_template: wrote %d chars to %s",
+            len(text), self._path,
+        )
+
+    def reset(self) -> None:
+        """Remove the file — future reads return the in-code default
+        again. Not exposed via the API today (the UI's 'Restore from
+        template' reloads the field, doesn't reset the store), but
+        useful for tests and operator recovery."""
+        try:
+            self._path.unlink()
+        except FileNotFoundError:
+            pass

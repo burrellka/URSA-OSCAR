@@ -191,6 +191,59 @@ def patch_config(req: ConfigUpdate, request: Request) -> MaskedConfig:
 
 
 # -------------------------------------------------------------------------
+# /ai/system-prompt/template — operator-editable template (0.9.10).
+# -------------------------------------------------------------------------
+
+
+class TemplateResponse(BaseModel):
+    """Shape returned by GET /ai/system-prompt/template."""
+    template: str
+    source: str = Field(
+        description=(
+            "Where the returned text came from. 'file' = an operator has "
+            "written a template to /data/system_prompt_template.txt. "
+            "'default' = the file doesn't exist; we returned the in-code "
+            "DEFAULT_TEMPLATE constant. The Settings UI uses this to show "
+            "a 'Using saved template' vs 'Using built-in default' badge."
+        ),
+    )
+
+
+class TemplateUpdate(BaseModel):
+    template: str = Field(
+        description=(
+            "The new template content. Replaces whatever's currently in "
+            "/data/system_prompt_template.txt. Atomic — a crash mid-write "
+            "won't leave a half-written file."
+        ),
+    )
+
+
+@router.get("/system-prompt/template", response_model=TemplateResponse)
+def get_system_prompt_template(request: Request) -> TemplateResponse:
+    """Return the current system-prompt template. On first read after a
+    fresh install (no file written yet), returns the in-code default
+    with source='default'. After the operator clicks "Save to template"
+    once, returns the file's content with source='file'."""
+    store = request.app.state.ai_template_store
+    text, source = store.get_template()
+    return TemplateResponse(template=text, source=source)
+
+
+@router.put("/system-prompt/template", response_model=TemplateResponse)
+def put_system_prompt_template(
+    body: TemplateUpdate, request: Request,
+) -> TemplateResponse:
+    """Replace the stored template. After this returns, every subsequent
+    chat session that doesn't have a per-provider custom_system_prompt
+    override will use the new template."""
+    store = request.app.state.ai_template_store
+    store.set_template(body.template)
+    text, source = store.get_template()
+    return TemplateResponse(template=text, source=source)
+
+
+# -------------------------------------------------------------------------
 # /ai/test — connection probe.
 # -------------------------------------------------------------------------
 
@@ -287,12 +340,21 @@ async def chat(req: ChatRequest, request: Request):
         f"Daily View for {req.context.current_date}"
         if req.context.current_date else None
     )
+    # 0.9.10 — template resolution:
+    #   1. cfg.custom_system_prompt (per-provider override) — if non-empty
+    #   2. TemplateStore.get_template_text() — file-backed editable template
+    #   3. None → render_system_prompt falls through to DEFAULT_TEMPLATE
+    template_store = request.app.state.ai_template_store
+    template_text = (
+        cfg.custom_system_prompt
+        or template_store.get_template_text()
+    )
     system_prompt = render_system_prompt(
         user_profile=profile if req.context.include_profile else None,
         device_clock=(profile or {}).get("display", {}).get("device_clock"),
         today_date=today,
         current_view=current_view,
-        custom_template=cfg.custom_system_prompt,
+        custom_template=template_text,
     )
 
     # API base URL for in-process tool execution. The chat endpoint

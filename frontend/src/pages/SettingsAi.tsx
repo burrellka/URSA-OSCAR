@@ -5,15 +5,23 @@
  *   1. Status                — enabled/disabled + current provider/model
  *   2. Provider Selection    — dropdown loaded from /api/v1/ai/providers
  *   3. Configuration         — key, endpoint, model (conditional fields)
- *   4. System Prompt         — read-only default or operator-customized
+ *   4. System Prompt         — editable template + per-provider override
  *   5. Notes                 — privacy + tool-calling caveats
  *
  * Keys never round-trip — the server returns api_key_set boolean only.
  * Save is a single PATCH; the field-edit state is local until save.
+ *
+ * 0.9.10 — System Prompt section gains "Restore from template" and
+ * "Save to template" buttons. The template itself is a file-backed,
+ * operator-editable artifact at /data/system_prompt_template.txt.
+ * The instruction field below pre-populates from the template when
+ * the per-provider override (cfg.custom_system_prompt) is empty —
+ * so operators always see what's actually active, never a blank box
+ * masking an invisible default.
  */
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Bot, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
+import { Bot, CheckCircle2, RotateCcw, Save, XCircle, Loader2 } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { AiMaskedConfig, AiProviderPreset, AiTestResult } from '../api/types';
 
@@ -49,11 +57,27 @@ export default function SettingsAi() {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<AiTestResult | null>(null);
 
+  // 0.9.10 — template store state. ``template`` is the current saved
+  // content of /data/system_prompt_template.txt (or DEFAULT_TEMPLATE if
+  // the file doesn't exist yet — distinguished by ``templateSource``).
+  // The instruction field below uses this to pre-populate on load and
+  // to power the "Restore from template" / "Save to template" buttons.
+  const [template, setTemplate] = useState<string>('');
+  const [templateSource, setTemplateSource] = useState<'default' | 'file'>('default');
+  const [templateSaving, setTemplateSaving] = useState(false);
+  const [templateActionMsg, setTemplateActionMsg] = useState<string | null>(null);
+
   useEffect(() => {
-    Promise.all([api.getAiConfig(), api.listAiProviders()])
-      .then(([cfg, p]) => {
+    Promise.all([
+      api.getAiConfig(),
+      api.listAiProviders(),
+      api.getSystemPromptTemplate(),
+    ])
+      .then(([cfg, p, tmpl]) => {
         setConfig(cfg);
         setProviders(p.providers);
+        setTemplate(tmpl.template);
+        setTemplateSource(tmpl.source);
         setEdit({
           enabled: cfg.enabled,
           provider_id: cfg.provider_id || '',
@@ -61,13 +85,56 @@ export default function SettingsAi() {
           endpoint_url: cfg.endpoint_url || '',
           routing_mode: cfg.routing_mode || 'direct',
           proxy_endpoint_url: cfg.proxy_endpoint_url || '',
-          custom_system_prompt: cfg.custom_system_prompt || '',
+          // 0.9.10 — pre-populate the instruction field with the saved
+          // template when no per-provider override exists. Operators
+          // see exactly what the AI is using; no invisible defaults.
+          custom_system_prompt: cfg.custom_system_prompt || tmpl.template,
           api_key: '',
         });
       })
       .catch((e: ApiError) => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
+
+  // 0.9.10 — Restore from template: discard the field's local edits and
+  // reload the saved template content. Confirmed before destroying work.
+  function onRestoreFromTemplate() {
+    if (!confirm(
+      "Restore the instruction field from the saved template?\n\n"
+      + "This will replace whatever's currently in the instruction field "
+      + "with the saved template content. Any unsaved local edits in the "
+      + "field will be lost. The saved template itself is NOT modified.\n\n"
+      + "Continue?",
+    )) return;
+    setEdit((prev) => ({ ...prev, custom_system_prompt: template }));
+    setTemplateActionMsg('Instruction field reloaded from saved template.');
+  }
+
+  // 0.9.10 — Save to template: persist the instruction field's current
+  // content as the new template. Affects every chat session that doesn't
+  // have a per-provider override.
+  async function onSaveToTemplate() {
+    if (!confirm(
+      "Save the current instruction field as the template?\n\n"
+      + "This will OVERWRITE the saved template on the server. Every "
+      + "future chat session that doesn't have a per-provider override "
+      + "will use the new template you're about to save.\n\n"
+      + "Continue?",
+    )) return;
+    setTemplateSaving(true);
+    setError(null);
+    setTemplateActionMsg(null);
+    try {
+      const result = await api.setSystemPromptTemplate(edit.custom_system_prompt);
+      setTemplate(result.template);
+      setTemplateSource(result.source);
+      setTemplateActionMsg(`Template saved (${result.template.length} chars).`);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setTemplateSaving(false);
+    }
+  }
 
   const selectedPreset = providers.find((p) => p.id === edit.provider_id);
 
@@ -348,23 +415,98 @@ export default function SettingsAi() {
         </div>
       )}
 
-      {/* Section 4: System prompt */}
+      {/* Section 4: System prompt + template (0.9.10) */}
       <div className="chart-card" style={{ marginBottom: '1rem' }}>
         <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem' }}>
-          System prompt
+          Instructions to AI
         </h2>
-        <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
-          The AI proxy fills in your profile + device-clock context into the
-          template at session start. Custom override below — leave blank to
-          use the default.
+        <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '0.5rem', lineHeight: 1.5 }}>
+          This is the system prompt the AI sees at the start of every chat.
+          The proxy fills in your profile and device-clock context where
+          the template references them via <code>{'{user_profile_summary}'}</code> and
+          {' '}<code>{'{device_clock_description}'}</code>.
+          {' '}
+          {templateSource === 'default' ? (
+            <>The field below was pre-populated with the built-in default
+            template — you haven't saved your own template yet.</>
+          ) : (
+            <>The field below was pre-populated with your saved template.</>
+          )}
+          {' '}Edit the text directly to change what this provider sees, or use
+          the buttons below to manage the saved template.
         </div>
         <textarea
-          rows={6}
+          rows={14}
           value={edit.custom_system_prompt}
-          onChange={(e) => setEdit({ ...edit, custom_system_prompt: e.target.value })}
-          placeholder="(empty = use default template — works for most users)"
-          style={{ width: '100%', fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: '0.8125rem' }}
+          onChange={(e) => {
+            setEdit({ ...edit, custom_system_prompt: e.target.value });
+            setTemplateActionMsg(null);
+          }}
+          style={{
+            width: '100%',
+            fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+            fontSize: '0.8125rem',
+            lineHeight: 1.45,
+          }}
         />
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem',
+          marginTop: '0.625rem',
+          flexWrap: 'wrap',
+        }}>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={onRestoreFromTemplate}
+            disabled={templateSaving}
+            title="Replace the instruction field with the saved template content."
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}
+          >
+            <RotateCcw size={14} /> Restore from template
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={onSaveToTemplate}
+            disabled={templateSaving}
+            title="Overwrite the saved template with whatever's currently in the instruction field."
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}
+          >
+            {templateSaving ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
+            {templateSaving ? 'Saving…' : 'Save to template'}
+          </button>
+          <span style={{
+            fontSize: '0.75rem',
+            color: 'var(--text-muted)',
+            marginLeft: '0.25rem',
+          }}>
+            Template source: <strong>{templateSource === 'file' ? 'saved file' : 'built-in default'}</strong>
+            {' · '}{template.length} chars
+          </span>
+          {templateActionMsg && (
+            <span style={{
+              fontSize: '0.75rem',
+              color: 'var(--accent-primary, #2563eb)',
+              marginLeft: '0.5rem',
+            }}>
+              {templateActionMsg}
+            </span>
+          )}
+        </div>
+        <div style={{
+          fontSize: '0.75rem',
+          color: 'var(--text-muted)',
+          marginTop: '0.5rem',
+          lineHeight: 1.5,
+        }}>
+          <strong>How the two persist differently:</strong> the <em>parent</em> "Save" button at the
+          top saves THIS field as your per-provider instructions (only the
+          currently selected provider uses it). "Save to template" saves it as
+          the project-wide template — used by any future provider you set up
+          who doesn't have their own per-provider override.
+        </div>
       </div>
 
       {/* Section 5: Notes */}
