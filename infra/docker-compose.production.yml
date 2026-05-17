@@ -10,7 +10,7 @@ networks:
 
 services:
   ursa-oscar-api:
-    image: brain40/ursa-oscar-api:0.10.0
+    image: brain40/ursa-oscar-api:0.11.0
     container_name: ursa-oscar-api
     environment:
       URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
@@ -34,9 +34,9 @@ services:
       # version chips read these env vars, and any drift between
       # `:latest` and the cosmetic chip caused operator confusion during
       # the Phase 5 patch cycle.
-      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-0.10.0}
-      URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-0.8.0}
-      URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-0.10.0}
+      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-0.11.0}
+      URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-0.9.0}
+      URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-0.11.0}
       URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-0.9.0}
     networks:
       - kairos-net
@@ -46,7 +46,7 @@ services:
     restart: unless-stopped
 
   ursa-oscar-mcp:
-    image: brain40/ursa-oscar-mcp:0.8.0
+    image: brain40/ursa-oscar-mcp:0.9.0
     container_name: ursa-oscar-mcp
     environment:
       # MCP reads from the API container over kairos-net (no direct DuckDB
@@ -73,7 +73,7 @@ services:
       - ursa-oscar-api
 
   ursa-oscar-web:
-    image: brain40/ursa-oscar-web:0.10.0
+    image: brain40/ursa-oscar-web:0.11.0
     container_name: ursa-oscar-web
     networks:
       - kairos-net

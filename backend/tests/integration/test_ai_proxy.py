@@ -294,10 +294,10 @@ def test_system_prompt_falls_back_when_no_profile():
 
 
 def test_tool_descriptors_count_and_membership():
-    """11 Phase 5 tools + 2 added in Phase 6 Ticket 6.1 = 13 total.
-    Phase 6 Ticket 6.2 + 6.3 will add more — bump the count then."""
+    """11 Phase 5 tools + 2 added in 6.1 + 1 added in 6.2 = 14 total.
+    Phase 6 Ticket 6.3 will add more (PDF rendering tools) — bump then."""
     names = [t["function"]["name"] for t in TOOL_DESCRIPTORS]
-    assert len(names) == 13
+    assert len(names) == 14
     for required in [
         "get_nightly_summary", "get_ahi_breakdown", "list_available_nights",
         "compare_periods", "analyze_correlation", "get_trend",
@@ -307,6 +307,8 @@ def test_tool_descriptors_count_and_membership():
         # Phase 6 Ticket 6.1:
         "analyze_multivariate_correlation",   # Item 2
         "analyze_lag_correlation",             # Item 3
+        # Phase 6 Ticket 6.2:
+        "analyze_prediction",
     ]:
         assert required in names, f"Missing tool descriptor: {required}"
 

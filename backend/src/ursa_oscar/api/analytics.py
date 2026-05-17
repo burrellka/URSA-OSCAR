@@ -35,6 +35,9 @@ from ..analytics.lag import (
 from ..analytics.multivariate import (
     analyze_multivariate_correlation as compute_multivariate_correlation,
 )
+from ..analytics.predict import (
+    analyze_prediction as compute_prediction,
+)
 from ..analytics.period_compare import compare_periods as compute_compare_periods
 from ..analytics.trend import compute_trend
 
@@ -231,6 +234,110 @@ def multivariate_correlation_endpoint(
 
         # Don't cache refused / errored results — recompute on next call
         # so the operator's "I added more data, let me try again" works.
+        envelope = {"ok": "code" not in data, "data": data}
+        if "code" not in data:
+            ctx.store(envelope)
+        return envelope
+
+
+# -----------------------------------------------------------------------
+# Phase 6 Ticket 6.2 — predictive modeling with prediction intervals
+# and counterfactual scenarios.
+# -----------------------------------------------------------------------
+
+
+class PredictRequest(BaseModel):
+    """POST body for /analytics/predict."""
+    target_metric: str = Field(
+        description=(
+            "Outcome to predict. Same naming as analyze_correlation — "
+            "bare nightly_summary column or 'log_type:filter:field'."
+        ),
+    )
+    predictor_metrics: list[str] = Field(
+        min_length=2, max_length=6,
+        description=(
+            "2-6 factors the model trains on. More predictors require "
+            "more training data; the n<30 floor applies regardless."
+        ),
+    )
+    training_start_date: date_t
+    training_end_date: date_t
+    counterfactual_inputs: dict[str, float] | None = Field(
+        default=None,
+        description=(
+            "Optional. Dict mapping predictor name to its hypothetical "
+            "value. Predictors not in this dict default to their "
+            "training-window median (the baseline). If absent entirely, "
+            "only the baseline prediction is computed."
+        ),
+    )
+    recompute: bool = Field(
+        default=False,
+        description="Bypass cache and force a fresh fit.",
+    )
+
+
+@router.post("/predict")
+def predict_endpoint(
+    body: PredictRequest, request: Request,
+) -> dict[str, Any]:
+    """Fit a ridge regression with cross-validated alpha on the
+    (target, predictors) training data, plus four quantile regressors
+    for prediction intervals. Predict at the baseline (median of each
+    predictor over the training window) and, if ``counterfactual_inputs``
+    is provided, at that override vector too — returning the delta.
+
+    Method: ``ridge_regression_cv_with_quantile_intervals``. Refuses
+    with INSUFFICIENT_DATA if the training set has fewer than 30 nights
+    after dropna over (target + all predictors).
+
+    Cached via the same fingerprint-based machinery as the other
+    analytical endpoints (Ticket 6.1). Importer + manual-log CRUD
+    invalidate entries whose training_date_range overlaps the change.
+    """
+    if body.training_end_date < body.training_start_date:
+        raise HTTPException(
+            status_code=400,
+            detail="training_end_date must be >= training_start_date",
+        )
+
+    db = request.app.state.db
+    cache = AnalyticalCache(db)
+    params = {
+        "target_metric": body.target_metric,
+        "predictor_metrics": list(body.predictor_metrics),
+        "start_date": body.training_start_date.isoformat(),
+        "end_date": body.training_end_date.isoformat(),
+        "counterfactual_inputs": (
+            dict(sorted(body.counterfactual_inputs.items()))
+            if body.counterfactual_inputs else None
+        ),
+    }
+
+    with cached_compute(
+        cache,
+        tool_name="analyze_prediction",
+        params=params,
+        start_date=body.training_start_date,
+        end_date=body.training_end_date,
+        recompute=body.recompute,
+    ) as ctx:
+        if ctx.hit:
+            return ctx.cached_result
+
+        try:
+            data = compute_prediction(
+                db,
+                target_metric=body.target_metric,
+                predictor_metrics=list(body.predictor_metrics),
+                training_start=body.training_start_date,
+                training_end=body.training_end_date,
+                counterfactual_inputs=body.counterfactual_inputs,
+            )
+        except UnknownMetricError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
         envelope = {"ok": "code" not in data, "data": data}
         if "code" not in data:
             ctx.store(envelope)

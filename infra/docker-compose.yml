@@ -6,7 +6,7 @@ networks:
 
 services:
   ursa-oscar-api:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-api:${URSA_OSCAR_API_IMAGE_VERSION:-0.10.0}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-api:${URSA_OSCAR_API_IMAGE_VERSION:-0.11.0}
     container_name: ursa-oscar-api
     environment:
       URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
@@ -21,9 +21,9 @@ services:
       # Phase 5.5 — strict version pinning. Defaults below mirror the
       # tag the `image:` lines pin to, so the Settings UI version chips
       # always reflect what's actually deployed.
-      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-0.10.0}
-      URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-0.8.0}
-      URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-0.10.0}
+      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-0.11.0}
+      URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-0.9.0}
+      URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-0.11.0}
       URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-0.9.0}
     networks:
       - kairos-net
@@ -33,7 +33,7 @@ services:
     restart: unless-stopped
 
   ursa-oscar-mcp:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-mcp:${URSA_OSCAR_MCP_IMAGE_VERSION:-0.8.0}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-mcp:${URSA_OSCAR_MCP_IMAGE_VERSION:-0.9.0}
     container_name: ursa-oscar-mcp
     environment:
       URSA_OSCAR_API_URL: http://ursa-oscar-api:8000
@@ -50,7 +50,7 @@ services:
       - ursa-oscar-api
 
   ursa-oscar-web:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-web:${URSA_OSCAR_WEB_IMAGE_VERSION:-0.10.0}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-web:${URSA_OSCAR_WEB_IMAGE_VERSION:-0.11.0}
     container_name: ursa-oscar-web
     networks:
       - kairos-net

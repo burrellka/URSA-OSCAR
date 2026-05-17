@@ -248,6 +248,71 @@ TOOL_DESCRIPTORS: list[dict] = [
         },
     },
     {
+        # Phase 6 Ticket 6.2 — predictive modeling + counterfactuals.
+        "type": "function",
+        "function": {
+            "name": "analyze_prediction",
+            "description": (
+                "Predict a metric tonight + optionally answer 'what if' "
+                "counterfactual questions. Use for 'what's my AHI likely "
+                "to be tonight?', 'if I take doxepin tonight what does "
+                "AHI change to?', 'what if I bump pressure max from 12 "
+                "to 14?', 'predict my morning alertness if the room is "
+                "darker'. Method: ridge regression with cross-validated "
+                "alpha plus four quantile regressors for prediction "
+                "intervals. Returns point estimate + 50% and 95% "
+                "prediction intervals (NEVER quote the point estimate "
+                "without its interval). When counterfactual_inputs is "
+                "provided, also returns a counterfactual block with "
+                "baseline vs counterfactual prediction + delta. REFUSES "
+                "if training set has < 30 nights (stricter than "
+                "correlation's n<15 because prediction needs more data "
+                "than correlation). Surface confidence_level + cross-"
+                "validation R² naturally; mention if R² < 0.4 ('the "
+                "model fits the data poorly')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target_metric": {
+                        "type": "string",
+                        "description": (
+                            "Outcome to predict. Bare nightly column "
+                            "OR 'log_type:filter:field' for manual logs."
+                        ),
+                    },
+                    "predictor_metrics": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "2-6 factors. Same naming as target_metric."
+                        ),
+                    },
+                    "training_start_date": {"type": "string"},
+                    "training_end_date": {"type": "string"},
+                    "counterfactual_inputs": {
+                        "type": "object",
+                        "description": (
+                            "Optional. Map predictor name -> hypothetical "
+                            "value. Predictors not in this dict default "
+                            "to their training-window median. If absent "
+                            "entirely, only the baseline prediction is "
+                            "computed."
+                        ),
+                    },
+                    "recompute": {
+                        "type": "boolean",
+                        "description": "Bypass cache. Default false.",
+                    },
+                },
+                "required": [
+                    "target_metric", "predictor_metrics",
+                    "training_start_date", "training_end_date",
+                ],
+            },
+        },
+    },
+    {
         # Phase 6 Ticket 6.1 Item 3.
         "type": "function",
         "function": {
@@ -500,6 +565,12 @@ _TOOL_ROUTING: dict[str, dict] = {
     "analyze_lag_correlation": {
         "method": "POST",
         "path": "/api/v1/analytics/lag-correlation",
+        "builder": _body_only,
+    },
+    # Phase 6 Ticket 6.2 — predictive modeling + counterfactuals.
+    "analyze_prediction": {
+        "method": "POST",
+        "path": "/api/v1/analytics/predict",
         "builder": _body_only,
     },
     "get_trend": {

@@ -307,6 +307,63 @@ export const api = {
       method: 'POST', body: JSON.stringify(body),
     }),
 
+  // Phase 6 Ticket 6.2 — predictive modeling + counterfactuals.
+  predict: (body: {
+    target_metric: string;
+    predictor_metrics: string[];
+    training_start_date: string;
+    training_end_date: string;
+    counterfactual_inputs?: Record<string, number> | null;
+    recompute?: boolean;
+  }) =>
+    request<{
+      ok: boolean;
+      data: {
+        method: string;
+        target_metric: string;
+        predictor_metrics: string[];
+        training_date_range: { start: string; end: string };
+        n_training_nights: number;
+        confidence_level?: string;
+        sample_caveat?: string | null;
+        prediction: {
+          point_estimate: number;
+          prediction_interval_95: [number | null, number | null];
+          prediction_interval_50: [number | null, number | null];
+        };
+        model_details: {
+          selected_alpha: number;
+          cross_validation_r2: number;
+          predictor_coefficients: Array<{
+            predictor: string;
+            coefficient: number;
+            abs_importance: number;
+          }>;
+          intercept: number;
+          baseline_inputs: Record<string, number>;
+          quantiles_fitted: number[];
+        };
+        counterfactual: {
+          baseline_prediction: number;
+          counterfactual_prediction: number;
+          counterfactual_prediction_intervals: {
+            prediction_interval_95: [number | null, number | null];
+            prediction_interval_50: [number | null, number | null];
+          };
+          delta: number;
+          delta_relative_pct: number | null;
+          overridden_predictors: string[];
+          interpretation: string;
+        } | null;
+        cache_age_seconds?: number;
+        computed_at?: string;
+        code?: string;
+        error?: string;
+      };
+    }>(`${BASE}/analytics/predict`, {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+
   getAnalyticalCacheStats: () =>
     request<{
       total_entries: number;

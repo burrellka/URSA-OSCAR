@@ -86,6 +86,11 @@ export default function Trends() {
             earliestDate={earliestDate}
             latestDate={latestDate}
           />
+          <PredictionSection
+            metricOptions={allMetricOptions}
+            earliestDate={earliestDate}
+            latestDate={latestDate}
+          />
         </>
       )}
     </div>
@@ -882,6 +887,454 @@ function LagSection({ metricOptions, earliestDate, latestDate }: {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+
+// =====================================================================
+// Phase 6 Ticket 6.2 — Predictive modeling + counterfactual scenarios.
+// =====================================================================
+
+
+function PredictionSection({ metricOptions, earliestDate, latestDate }: {
+  metricOptions: string[]; earliestDate: string; latestDate: string;
+}) {
+  const [target, setTarget] = useState<string>(
+    metricOptions.includes('total_ahi') ? 'total_ahi' : metricOptions[0],
+  );
+  const [predictors, setPredictors] = useState<string[]>(
+    metricOptions.slice(0, 4).filter((m) => m !== 'total_ahi').slice(0, 2),
+  );
+  const [preset, setPreset] = useState<RangePreset>('90d');
+  const { start, end } = useMemo(
+    () => resolveRange(preset, earliestDate, latestDate),
+    [preset, earliestDate, latestDate],
+  );
+
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<Awaited<ReturnType<typeof api.predict>> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Counterfactual editor state — populated lazily once a baseline
+  // prediction has come back (we need baseline_inputs to start from).
+  const [cfInputs, setCfInputs] = useState<Record<string, string>>({});
+  const [showModelDetails, setShowModelDetails] = useState(false);
+  const [showCounterfactual, setShowCounterfactual] = useState(false);
+
+  function togglePredictor(metric: string) {
+    if (predictors.includes(metric)) {
+      setPredictors(predictors.filter((p) => p !== metric));
+    } else if (predictors.length < 6) {
+      setPredictors([...predictors, metric]);
+    }
+  }
+
+  async function runBaseline() {
+    if (!target || predictors.length < 2 || !start || !end) return;
+    setLoading(true); setError(null);
+    try {
+      const r = await api.predict({
+        target_metric: target,
+        predictor_metrics: predictors,
+        training_start_date: start,
+        training_end_date: end,
+      });
+      setResult(r);
+      // Seed the counterfactual editor with baseline values as strings,
+      // so the operator can edit any predictor.
+      if (r.ok && r.data.model_details?.baseline_inputs) {
+        const seed: Record<string, string> = {};
+        for (const [k, v] of Object.entries(r.data.model_details.baseline_inputs)) {
+          seed[k] = String(v.toFixed(2));
+        }
+        setCfInputs(seed);
+      }
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function runCounterfactual() {
+    if (!result?.ok) return;
+    setLoading(true); setError(null);
+    try {
+      // Only send overrides that DIFFER from the baseline — keeps the
+      // request body minimal and the cache fingerprint stable for
+      // "no real change" inputs.
+      const baseline = result.data.model_details.baseline_inputs;
+      const overrides: Record<string, number> = {};
+      for (const [k, v] of Object.entries(cfInputs)) {
+        const num = parseFloat(v);
+        if (Number.isFinite(num) && Math.abs(num - (baseline[k] ?? 0)) > 1e-9) {
+          overrides[k] = num;
+        }
+      }
+      if (Object.keys(overrides).length === 0) {
+        setError('No counterfactual overrides differ from the baseline — edit at least one predictor.');
+        setLoading(false);
+        return;
+      }
+      const r = await api.predict({
+        target_metric: target,
+        predictor_metrics: predictors,
+        training_start_date: start,
+        training_end_date: end,
+        counterfactual_inputs: overrides,
+      });
+      setResult(r);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const data = result?.data;
+  const refused = result && !result.ok;
+  const pred = data?.prediction;
+  const cf = data?.counterfactual;
+  const md = data?.model_details;
+
+  return (
+    <div className="chart-card" style={{ marginTop: '1rem' }}>
+      <h2 style={{ fontSize: '1.0625rem', fontWeight: 600, marginTop: 0, marginBottom: '0.25rem' }}>
+        Prediction & scenarios
+      </h2>
+      <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+        Predict tonight's value using ridge regression with cross-validated
+        alpha. Then explore "what if" — change any predictor and see how
+        the prediction shifts. Refuses on training data with &lt; 30 nights.
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem', marginBottom: '0.5rem' }}>
+        <div className="field">
+          <label>Target metric</label>
+          <select value={target} onChange={(e) => setTarget(e.target.value)}>
+            {metricOptions.map((m) => <option key={m} value={m}>{m}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Training range</label>
+          <select value={preset} onChange={(e) => setPreset(e.target.value as RangePreset)}>
+            <option value="7d">Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="90d">Last 90 days</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="field" style={{ marginBottom: '0.75rem' }}>
+        <label>
+          Predictor metrics (pick 2-6)
+          {' '}<span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>
+            — selected: {predictors.length} · more predictors = needs more training data
+          </span>
+        </label>
+        <div style={{
+          display: 'flex', flexWrap: 'wrap', gap: '0.375rem',
+          maxHeight: '7.5rem', overflowY: 'auto',
+          padding: '0.5rem', border: '1px solid var(--border-color, #e5e7eb)', borderRadius: '6px',
+        }}>
+          {metricOptions
+            .filter((m) => m !== target)
+            .map((m) => {
+              const selected = predictors.includes(m);
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => togglePredictor(m)}
+                  className={selected ? 'btn-primary' : 'btn-secondary'}
+                  style={{
+                    fontSize: '0.75rem', padding: '0.25rem 0.5rem',
+                    fontFamily: 'var(--font-mono, ui-monospace, monospace)',
+                  }}
+                  disabled={!selected && predictors.length >= 6}
+                >
+                  {m}
+                </button>
+              );
+            })}
+        </div>
+      </div>
+
+      <button
+        type="button"
+        className="btn-primary"
+        onClick={runBaseline}
+        disabled={loading || predictors.length < 2 || !target}
+      >
+        {loading ? 'Predicting…' : 'Predict for tonight (baseline)'}
+      </button>
+
+      {error && <div className="error-banner" style={{ marginTop: '0.75rem' }}>{error}</div>}
+
+      {refused && (
+        <div style={{ marginTop: '0.75rem', padding: '0.5rem 0.75rem',
+                      background: 'var(--bg-secondary, #f3f4f6)', borderRadius: '6px',
+                      fontSize: '0.8125rem' }}>
+          <strong>Insufficient training data:</strong> {data?.error}
+        </div>
+      )}
+
+      {/* --- Baseline prediction result --- */}
+      {data && !refused && pred && (
+        <div style={{ marginTop: '0.75rem' }}>
+          <div style={{
+            padding: '0.875rem 1rem',
+            background: 'var(--bg-secondary, #f3f4f6)',
+            borderRadius: '8px',
+          }}>
+            <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>
+              Predicted {target}
+            </div>
+            <div style={{ fontSize: '2rem', fontWeight: 700, lineHeight: 1.1, fontVariantNumeric: 'tabular-nums' }}>
+              {pred.point_estimate.toFixed(2)}
+            </div>
+            {pred.prediction_interval_95[0] != null && pred.prediction_interval_95[1] != null && (
+              <div style={{ fontSize: '0.8125rem', marginTop: '0.375rem', color: 'var(--text-secondary)' }}>
+                <strong>95% prediction interval:</strong> {pred.prediction_interval_95[0]!.toFixed(2)} to {pred.prediction_interval_95[1]!.toFixed(2)}
+              </div>
+            )}
+            {pred.prediction_interval_50[0] != null && pred.prediction_interval_50[1] != null && (
+              <div style={{ fontSize: '0.8125rem', marginTop: '0.125rem', color: 'var(--text-secondary)' }}>
+                <strong>50% prediction interval:</strong> {pred.prediction_interval_50[0]!.toFixed(2)} to {pred.prediction_interval_50[1]!.toFixed(2)}
+              </div>
+            )}
+            {/* Visual: a horizontal bar showing the intervals + point estimate. */}
+            <IntervalBar
+              point={pred.point_estimate}
+              interval50={pred.prediction_interval_50}
+              interval95={pred.prediction_interval_95}
+            />
+            <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              Based on <strong>{data.n_training_nights} nights</strong> of training data.
+              {' '}Confidence: <strong>{data.confidence_level ?? '—'}</strong>.
+              {' '}CV R² = <strong>{md?.cross_validation_r2.toFixed(2)}</strong>.
+              {md && md.cross_validation_r2 < 0.4 && (
+                <span style={{ color: 'var(--ahi-warn, #d97706)', marginLeft: '0.375rem' }}>
+                  ⚠ R² is low — model fits the data poorly; treat as exploratory.
+                </span>
+              )}
+              {data.cache_age_seconds != null && data.cache_age_seconds > 0 && (
+                <> · <em>cached {data.cache_age_seconds}s ago</em></>
+              )}
+            </div>
+            {data.sample_caveat && (
+              <div style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--ahi-warn, #d97706)' }}>
+                {data.sample_caveat}
+              </div>
+            )}
+          </div>
+
+          {/* --- Counterfactual editor --- */}
+          {md && (
+            <div style={{ marginTop: '0.625rem' }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setShowCounterfactual(!showCounterfactual)}
+                style={{ fontSize: '0.8125rem' }}
+              >
+                {showCounterfactual ? 'Hide' : 'Try a scenario'} (counterfactual)
+              </button>
+              {showCounterfactual && (
+                <div style={{
+                  marginTop: '0.5rem', padding: '0.625rem 0.75rem',
+                  border: '1px solid var(--border-color, #e5e7eb)', borderRadius: '6px',
+                }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
+                    Edit any predictor below to ask "what if?" Predictors you leave
+                    alone keep their training-window median.
+                  </div>
+                  {predictors.map((p) => (
+                    <div key={p} style={{
+                      display: 'grid', gridTemplateColumns: '1fr 7rem',
+                      alignItems: 'center', gap: '0.5rem',
+                      padding: '0.25rem 0',
+                    }}>
+                      <code style={{ fontSize: '0.75rem' }}>{p}</code>
+                      <input
+                        type="number"
+                        step="0.1"
+                        value={cfInputs[p] ?? ''}
+                        onChange={(e) => setCfInputs({ ...cfInputs, [p]: e.target.value })}
+                        style={{ fontSize: '0.8125rem' }}
+                      />
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={runCounterfactual}
+                    disabled={loading}
+                    style={{ marginTop: '0.5rem' }}
+                  >
+                    {loading ? 'Recalculating…' : 'Recalculate'}
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* --- Counterfactual result --- */}
+          {cf && (
+            <div style={{
+              marginTop: '0.625rem',
+              padding: '0.75rem 1rem',
+              background: cf.delta < 0 ? 'rgba(37, 99, 235, 0.08)' : 'rgba(220, 38, 38, 0.08)',
+              borderRadius: '8px',
+            }}>
+              <div style={{ fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
+                Counterfactual scenario
+              </div>
+              <div style={{
+                display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem',
+                marginTop: '0.25rem',
+              }}>
+                <div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Baseline</div>
+                  <div style={{ fontSize: '1.5rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                    {cf.baseline_prediction.toFixed(2)}
+                  </div>
+                </div>
+                <div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Counterfactual</div>
+                  <div style={{ fontSize: '1.5rem', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+                    {cf.counterfactual_prediction.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+              <div style={{ marginTop: '0.5rem', fontSize: '0.875rem' }}>
+                <strong>Δ = {cf.delta > 0 ? '+' : ''}{cf.delta.toFixed(2)}</strong>
+                {cf.delta_relative_pct != null && (
+                  <> ({cf.delta_relative_pct > 0 ? '+' : ''}{cf.delta_relative_pct.toFixed(1)}%)</>
+                )}
+                {' — '}<em>{cf.interpretation.replaceAll('_', ' ')}</em>
+              </div>
+              <div style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                Overridden: <code>{cf.overridden_predictors.join(', ')}</code>.
+                This is the model's projection at those inputs — not a clinical
+                recommendation to actually make the change. Talk to your provider
+                before adjusting medications or therapy settings.
+              </div>
+            </div>
+          )}
+
+          {/* --- Model details (collapsible) --- */}
+          {md && (
+            <div style={{ marginTop: '0.625rem' }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => setShowModelDetails(!showModelDetails)}
+                style={{ fontSize: '0.8125rem' }}
+              >
+                {showModelDetails ? 'Hide' : 'Show'} model details
+              </button>
+              {showModelDetails && (
+                <div style={{
+                  marginTop: '0.5rem', padding: '0.625rem 0.75rem',
+                  border: '1px solid var(--border-color, #e5e7eb)', borderRadius: '6px',
+                  fontSize: '0.8125rem',
+                }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ background: 'var(--bg-secondary, #f3f4f6)' }}>
+                        <th style={{ padding: '0.3rem', textAlign: 'left' }}>Predictor</th>
+                        <th style={{ padding: '0.3rem', textAlign: 'right' }}>Coefficient</th>
+                        <th style={{ padding: '0.3rem', textAlign: 'right' }}>Importance</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...md.predictor_coefficients]
+                        .sort((a, b) => b.abs_importance - a.abs_importance)
+                        .map((c) => (
+                          <tr key={c.predictor} style={{ borderTop: '1px solid var(--border-color, #e5e7eb)' }}>
+                            <td style={{ padding: '0.3rem', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>
+                              {c.predictor}
+                            </td>
+                            <td style={{ padding: '0.3rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                              {c.coefficient.toFixed(3)}
+                            </td>
+                            <td style={{ padding: '0.3rem', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                              {(c.abs_importance * 100).toFixed(0)}%
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                  <div style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    Selected alpha (ridge regularization): <strong>{md.selected_alpha}</strong>
+                    {' · '}Intercept: <strong>{md.intercept.toFixed(3)}</strong>
+                  </div>
+                  <div style={{ marginTop: '0.375rem', fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                    Coefficients describe the model's fit, not the underlying
+                    clinical mechanism. They are not causal.
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/** Horizontal-bar visualization of prediction intervals: a thin line
+ *  for 95%, thicker line for 50%, and a dot at the point estimate.
+ *  Scales linearly across the 95% range. */
+function IntervalBar({
+  point,
+  interval50,
+  interval95,
+}: {
+  point: number;
+  interval50: [number | null, number | null];
+  interval95: [number | null, number | null];
+}) {
+  if (
+    interval95[0] == null || interval95[1] == null
+    || interval50[0] == null || interval50[1] == null
+  ) {
+    return null;
+  }
+  const lo95 = interval95[0]!;
+  const hi95 = interval95[1]!;
+  const span = Math.max(hi95 - lo95, 1e-9);
+  const pct = (v: number) => ((v - lo95) / span) * 100;
+  const lo50 = pct(interval50[0]!);
+  const hi50 = pct(interval50[1]!);
+  const pt = pct(point);
+  return (
+    <div style={{ marginTop: '0.75rem', position: 'relative', height: '1rem' }}>
+      {/* 95% line */}
+      <div style={{
+        position: 'absolute', top: '50%', left: 0, right: 0,
+        height: '2px', background: 'var(--accent-primary, #2563eb)',
+        opacity: 0.4, transform: 'translateY(-50%)',
+      }} />
+      {/* 50% bar */}
+      <div style={{
+        position: 'absolute', top: '50%',
+        left: `${lo50}%`, width: `${Math.max(hi50 - lo50, 1)}%`,
+        height: '8px', background: 'var(--accent-primary, #2563eb)',
+        opacity: 0.7, transform: 'translateY(-50%)', borderRadius: '4px',
+      }} />
+      {/* Point estimate dot */}
+      <div style={{
+        position: 'absolute', top: '50%',
+        left: `calc(${pt}% - 4px)`,
+        width: '8px', height: '8px', borderRadius: '50%',
+        background: 'var(--text-primary, #111)',
+        transform: 'translateY(-50%)',
+      }} />
     </div>
   );
 }
