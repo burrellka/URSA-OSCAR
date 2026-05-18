@@ -1,0 +1,209 @@
+/* Shared style for URSA-OSCAR PDF reports — Phase 6 Ticket 6.3.
+
+   WeasyPrint supports a meaningful subset of CSS for paged media.
+   Stick to:
+     - Standard typography (font-family, size, weight, color)
+     - Box model (margin, padding, border)
+     - @page rules for page setup + headers/footers
+     - Basic flex/grid only where supported (we use neither — table
+       layout is more reliable across WeasyPrint versions)
+
+   This file is loaded by every template via _base.html. Template-
+   specific tweaks live in the template itself.
+*/
+
+@page {
+  size: Letter;
+  margin: 2.5cm 2cm 2.5cm 2cm;
+  @top-left {
+    content: "URSA-OSCAR Clinical Report";
+    font-size: 9pt;
+    color: #6b7280;
+    font-family: -apple-system, "Helvetica Neue", "Liberation Sans", sans-serif;
+  }
+  @top-right {
+    content: string(report-date-range);
+    font-size: 9pt;
+    color: #6b7280;
+    font-family: -apple-system, "Helvetica Neue", "Liberation Sans", sans-serif;
+  }
+  @bottom-center {
+    content: "Page " counter(page) " of " counter(pages);
+    font-size: 9pt;
+    color: #6b7280;
+    font-family: -apple-system, "Helvetica Neue", "Liberation Sans", sans-serif;
+  }
+}
+
+body {
+  font-family: -apple-system, "Helvetica Neue", "Liberation Sans", sans-serif;
+  color: #111827;
+  font-size: 11pt;
+  line-height: 1.45;
+}
+
+h1 {
+  font-size: 20pt;
+  font-weight: 700;
+  color: #111827;
+  margin: 0 0 0.25em 0;
+  page-break-after: avoid;
+}
+
+h2 {
+  font-size: 14pt;
+  font-weight: 600;
+  color: #1f2937;
+  margin: 1.5em 0 0.5em 0;
+  padding-bottom: 0.25em;
+  border-bottom: 1px solid #e5e7eb;
+  page-break-after: avoid;
+}
+
+h3 {
+  font-size: 11pt;
+  font-weight: 600;
+  color: #374151;
+  margin: 1em 0 0.25em 0;
+  page-break-after: avoid;
+}
+
+p {
+  margin: 0.5em 0;
+}
+
+.subtitle {
+  font-size: 11pt;
+  color: #6b7280;
+  margin: 0 0 1em 0;
+}
+
+.cover-meta {
+  margin: 1em 0;
+  font-size: 10pt;
+  color: #4b5563;
+}
+.cover-meta dt {
+  font-weight: 600;
+  color: #374151;
+  display: inline-block;
+  width: 8em;
+}
+.cover-meta dd {
+  display: inline;
+  margin: 0;
+}
+.cover-meta div {
+  margin: 0.25em 0;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+  font-size: 10pt;
+}
+
+th {
+  background: #f3f4f6;
+  font-weight: 600;
+  color: #1f2937;
+  padding: 0.4em 0.5em;
+  text-align: left;
+  border-bottom: 1px solid #d1d5db;
+}
+
+td {
+  padding: 0.35em 0.5em;
+  border-bottom: 1px solid #f3f4f6;
+}
+
+td.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.callout {
+  border-left: 3px solid #2563eb;
+  padding: 0.5em 0.75em;
+  margin: 0.5em 0;
+  background: #f9fafb;
+  font-size: 10pt;
+}
+
+.callout-warn {
+  border-left-color: #d97706;
+}
+
+.callout-error {
+  border-left-color: #dc2626;
+}
+
+.insufficient-data {
+  background: #fef3c7;
+  border-left: 3px solid #d97706;
+  padding: 0.75em 1em;
+  margin: 0.5em 0;
+  font-size: 10pt;
+  color: #78350f;
+}
+.insufficient-data .label {
+  font-weight: 600;
+  display: block;
+  margin-bottom: 0.25em;
+}
+
+.method-card {
+  margin: 0.75em 0 1.25em 0;
+  padding: 0.5em 0.75em;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  font-size: 10pt;
+}
+.method-card .method-name {
+  font-weight: 600;
+  margin-bottom: 0.25em;
+  color: #1f2937;
+}
+.method-card .method-body {
+  margin: 0.25em 0;
+}
+.method-card .method-limit-label {
+  font-weight: 600;
+  color: #6b7280;
+  font-size: 9pt;
+}
+
+.disclaimer {
+  font-size: 9pt;
+  color: #6b7280;
+  margin-top: 2em;
+  padding-top: 0.75em;
+  border-top: 1px solid #e5e7eb;
+  line-height: 1.4;
+}
+
+.page-break {
+  page-break-after: always;
+}
+
+.muted {
+  color: #6b7280;
+}
+
+.numeric {
+  font-variant-numeric: tabular-nums;
+}
+
+ul {
+  margin: 0.25em 0;
+  padding-left: 1.5em;
+}
+
+code {
+  font-family: "Liberation Mono", "Courier New", monospace;
+  font-size: 10pt;
+  background: #f3f4f6;
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+}

@@ -40,6 +40,12 @@ dependencies = [
     # (no SDK dependency).
     "cryptography>=42.0",
     "anthropic>=0.40",
+    # Phase 6 Ticket 6.3 — provider PDF reports. Jinja2 renders the
+    # report HTML; WeasyPrint converts HTML→PDF. WeasyPrint has
+    # system-level dependencies on libpango/libcairo/fontconfig which
+    # are installed in the API Dockerfile.
+    "Jinja2>=3.1.2",
+    "WeasyPrint>=60.0",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,220 @@
+{% extends "_base.html" %}
+
+{% block report_h1 %}Full Clinical Report{% endblock %}
+{% block report_subtitle %}Comprehensive — overview, trends, correlations, lag analysis, predictions{% endblock %}
+
+{% block body %}
+
+{# ===== Overview ===== #}
+<h2>Overview</h2>
+{% if ctx.overview.insufficient_data %}
+  <div class="insufficient-data">
+    <span class="label">Insufficient data for overview</span>
+    {{ ctx.overview.reason }}
+  </div>
+{% else %}
+  <table>
+    <tbody>
+      <tr><th>Nights with recorded data</th><td class="numeric">{{ ctx.overview.n_nights }}</td></tr>
+      <tr><th>Date range covered</th>
+          <td>{{ ctx.overview.earliest_date }} to {{ ctx.overview.latest_date }}</td></tr>
+      {% if ctx.overview.mean_total_ahi is not none %}
+        <tr><th>Mean total AHI</th><td class="numeric">{{ "%.2f"|format(ctx.overview.mean_total_ahi) }}</td></tr>
+      {% endif %}
+      {% if ctx.overview.mean_central_ahi is not none %}
+        <tr><th>Mean central AHI</th><td class="numeric">{{ "%.2f"|format(ctx.overview.mean_central_ahi) }}</td></tr>
+      {% endif %}
+      {% if ctx.overview.mean_obstructive_ahi is not none %}
+        <tr><th>Mean obstructive AHI</th><td class="numeric">{{ "%.2f"|format(ctx.overview.mean_obstructive_ahi) }}</td></tr>
+      {% endif %}
+      {% if ctx.overview.mean_hours_per_night is not none %}
+        <tr><th>Mean hours per night</th><td class="numeric">{{ "%.2f"|format(ctx.overview.mean_hours_per_night) }}</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+{% endif %}
+
+{# ===== Trends ===== #}
+<h2>Trends</h2>
+<p class="muted">Linear least-squares trend over the report's date range, fit to each daily metric.</p>
+
+{% for trend, label in [(ctx.trend_total_ahi, "Total AHI"), (ctx.trend_p95_pressure, "95th-percentile pressure"), (ctx.trend_p95_leak, "95th-percentile leak")] %}
+  <h3>{{ label }}</h3>
+  {% if trend.insufficient_data %}
+    <div class="insufficient-data">
+      <span class="label">Insufficient data</span>
+      {{ trend.reason }}
+    </div>
+  {% else %}
+    <table>
+      <tbody>
+        <tr><th>N nights fit</th><td class="numeric">{{ trend.n_nights }}</td></tr>
+        <tr><th>Slope per day</th>
+            <td class="numeric">{% if trend.slope_per_day is not none %}{{ "%.4f"|format(trend.slope_per_day) }}{% else %}—{% endif %}</td></tr>
+        <tr><th>R² (variance explained)</th>
+            <td class="numeric">{% if trend.r_squared is not none %}{{ "%.3f"|format(trend.r_squared) }}{% else %}—{% endif %}</td></tr>
+        <tr><th>P-value (slope)</th>
+            <td class="numeric">{% if trend.p_value is not none %}{{ "%.4f"|format(trend.p_value) }}{% else %}—{% endif %}</td></tr>
+        <tr><th>Interpretation</th><td>{{ trend.interpretation_text or trend.interpretation }}</td></tr>
+      </tbody>
+    </table>
+  {% endif %}
+{% endfor %}
+
+{# ===== Pairwise Correlations ===== #}
+<h2>Pairwise correlations</h2>
+<p class="muted">Pearson correlation between selected metric pairs over the report's date range.</p>
+<table>
+  <thead>
+    <tr><th>Metric A</th><th>Metric B</th><th>r</th><th>p-value</th><th>n</th><th>Interpretation</th></tr>
+  </thead>
+  <tbody>
+    {% for c in ctx.pairwise_correlations %}
+      <tr>
+        <td><code>{{ c.metric_a }}</code></td>
+        <td><code>{{ c.metric_b }}</code></td>
+        {% if c.insufficient_data %}
+          <td colspan="4" class="muted">Insufficient data — {{ c.reason }}</td>
+        {% else %}
+          <td class="numeric">{% if c.pearson_r is not none %}{{ "%.3f"|format(c.pearson_r) }}{% else %}—{% endif %}</td>
+          <td class="numeric">{% if c.p_value is not none %}{{ "%.4f"|format(c.p_value) }}{% else %}—{% endif %}</td>
+          <td class="numeric">{{ c.n_pairs or 0 }}</td>
+          <td>{{ c.interpretation or "—" }}</td>
+        {% endif %}
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{# ===== Multivariate (partial) correlation ===== #}
+<h2>Multivariate analysis</h2>
+{% if ctx.multivariate.insufficient_data %}
+  <div class="insufficient-data">
+    <span class="label">Insufficient data for multivariate analysis</span>
+    {{ ctx.multivariate.reason }}
+    {% if ctx.multivariate.n_observations is defined %}<br>(N observations: {{ ctx.multivariate.n_observations }}; need ≥ 15.){% endif %}
+  </div>
+{% else %}
+  <p class="muted">
+    Target: <code>{{ ctx.multivariate.target_metric }}</code>.
+    Predictors: {% for p in ctx.multivariate.controlled_for %}<code>{{ p }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+    N = {{ ctx.multivariate.n_observations }}. Confidence: <strong>{{ ctx.multivariate.confidence_level }}</strong>.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Predictor</th><th>Partial r</th><th>95% CI</th><th>p-value</th><th>Interpretation</th></tr>
+    </thead>
+    <tbody>
+      {% for p in ctx.multivariate.predictors %}
+        <tr>
+          <td><code>{{ p.metric }}</code></td>
+          <td class="numeric">{% if p.partial_r is not none %}{{ "%.3f"|format(p.partial_r) }}{% else %}—{% endif %}</td>
+          <td class="numeric">{% if p.ci_95[0] is not none and p.ci_95[1] is not none %}[{{ "%.2f"|format(p.ci_95[0]) }}, {{ "%.2f"|format(p.ci_95[1]) }}]{% else %}—{% endif %}</td>
+          <td class="numeric">{% if p.p_value is not none %}{{ "%.4f"|format(p.p_value) }}{% else %}—{% endif %}</td>
+          <td>{{ p.interpretation }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if ctx.multivariate.sample_caveat %}
+    <div class="callout callout-warn">{{ ctx.multivariate.sample_caveat }}</div>
+  {% endif %}
+  {% if ctx.multivariate.multicollinear_pairs %}
+    <div class="callout callout-warn">
+      <strong>Multicollinearity:</strong>
+      {% for pair in ctx.multivariate.multicollinear_pairs %}
+        <code>{{ pair.metric_a }}</code> ↔ <code>{{ pair.metric_b }}</code> (r = {{ "%.2f"|format(pair.r) }}){% if not loop.last %}; {% endif %}
+      {% endfor %}
+      — partial correlations involving these pairs may be unstable.
+    </div>
+  {% endif %}
+{% endif %}
+
+{# ===== Lag analyses ===== #}
+<h2>Time-shifted lag analysis</h2>
+<p class="muted">
+  Cross-correlation between hypothesized cause/effect metric pairs across a
+  lag window of −3 to +7 days, with bootstrap 95% confidence intervals at
+  each lag.
+</p>
+{% for la in ctx.lag_analyses %}
+  <h3><code>{{ la.metric_a }}</code> → <code>{{ la.metric_b }}</code></h3>
+  {% if la.insufficient_data %}
+    <div class="insufficient-data">
+      <span class="label">Insufficient data</span>
+      {{ la.reason }}
+    </div>
+  {% else %}
+    <p>
+      Peak lag: <strong>{{ la.peak_lag_days }} day(s)</strong>.
+      Peak correlation r = {{ "%.3f"|format(la.peak_correlation) if la.peak_correlation is not none else "—" }}.
+      Interpretation: {{ la.interpretation }}.
+    </p>
+    {% if la.clinical_note %}<p class="callout">{{ la.clinical_note }}</p>{% endif %}
+    <table>
+      <thead><tr><th>Lag (days)</th><th>r</th><th>95% CI</th><th>n aligned</th></tr></thead>
+      <tbody>
+        {% for entry in la.lag_correlations %}
+          <tr>
+            <td class="numeric">{% if entry.lag_days > 0 %}+{% endif %}{{ entry.lag_days }}</td>
+            <td class="numeric">{% if entry.r is not none %}{{ "%.3f"|format(entry.r) }}{% else %}—{% endif %}</td>
+            <td class="numeric">{% if entry.ci_95[0] is not none and entry.ci_95[1] is not none %}[{{ "%.2f"|format(entry.ci_95[0]) }}, {{ "%.2f"|format(entry.ci_95[1]) }}]{% else %}—{% endif %}</td>
+            <td class="numeric">{{ entry.n_aligned }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endfor %}
+
+{# ===== Predictions ===== #}
+<h2>Tonight's prediction</h2>
+{% if ctx.prediction.insufficient_data %}
+  <div class="insufficient-data">
+    <span class="label">Insufficient data for predictive modeling</span>
+    {{ ctx.prediction.reason }}
+    {% if ctx.prediction.n_training_nights is defined %}<br>(Training nights: {{ ctx.prediction.n_training_nights }}; need ≥ 30.){% endif %}
+  </div>
+{% else %}
+  <p>
+    Target: <code>{{ ctx.prediction.target_metric }}</code>.
+    Trained on <strong>{{ ctx.prediction.n_training_nights }}</strong> nights.
+    Confidence: <strong>{{ ctx.prediction.confidence_level }}</strong>.
+    Cross-validation R²: <strong>{{ "%.3f"|format(ctx.prediction.model_details.cross_validation_r2) }}</strong>.
+  </p>
+  <table>
+    <tbody>
+      <tr><th>Point estimate</th>
+          <td class="numeric"><strong>{{ "%.3f"|format(ctx.prediction.prediction.point_estimate) }}</strong></td></tr>
+      <tr><th>50% prediction interval</th>
+          <td class="numeric">{% if ctx.prediction.prediction.prediction_interval_50[0] is not none and ctx.prediction.prediction.prediction_interval_50[1] is not none %}[{{ "%.2f"|format(ctx.prediction.prediction.prediction_interval_50[0]) }}, {{ "%.2f"|format(ctx.prediction.prediction.prediction_interval_50[1]) }}]{% else %}—{% endif %}</td></tr>
+      <tr><th>95% prediction interval</th>
+          <td class="numeric">{% if ctx.prediction.prediction.prediction_interval_95[0] is not none and ctx.prediction.prediction.prediction_interval_95[1] is not none %}[{{ "%.2f"|format(ctx.prediction.prediction.prediction_interval_95[0]) }}, {{ "%.2f"|format(ctx.prediction.prediction.prediction_interval_95[1]) }}]{% else %}—{% endif %}</td></tr>
+      <tr><th>Selected α (ridge regularization)</th>
+          <td class="numeric">{{ ctx.prediction.model_details.selected_alpha }}</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Predictor coefficients</h3>
+  <table>
+    <thead><tr><th>Predictor</th><th>Coefficient</th><th>Relative importance</th></tr></thead>
+    <tbody>
+      {% for c in ctx.prediction.model_details.predictor_coefficients %}
+        <tr>
+          <td><code>{{ c.predictor }}</code></td>
+          <td class="numeric">{{ "%.3f"|format(c.coefficient) }}</td>
+          <td class="numeric">{{ "%.0f"|format(c.abs_importance * 100) }}%</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" style="font-size: 9pt;">
+    Coefficients describe the model's fit, not the underlying clinical
+    mechanism. They are not causal.
+  </p>
+  {% if ctx.prediction.sample_caveat %}
+    <div class="callout callout-warn">{{ ctx.prediction.sample_caveat }}</div>
+  {% endif %}
+{% endif %}
+
+{% endblock %}

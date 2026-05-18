@@ -8,6 +8,7 @@ import {
   Download,
   TrendingUp,
   ClipboardList,
+  FileText,
   User,
   Settings as SettingsIcon,
   type LucideIcon,
@@ -22,6 +23,8 @@ const NAV: Array<{ to: string; label: string; Icon: LucideIcon; end?: boolean }>
   // 0.9.7 — Export sits next to Import (symmetric data flow).
   { to: '/export', label: 'Export', Icon: Download },
   { to: '/trends', label: 'Trends', Icon: TrendingUp },
+  // Phase 6 Ticket 6.3 — provider PDF reports.
+  { to: '/reports', label: 'Reports', Icon: FileText },
   { to: '/logs', label: 'Manual Logs', Icon: ClipboardList },
   // Phase 3 Item 4B — Profile lives between Manual Logs and Settings.
   { to: '/profile', label: 'Profile', Icon: User },

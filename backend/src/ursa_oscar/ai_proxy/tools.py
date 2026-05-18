@@ -248,6 +248,47 @@ TOOL_DESCRIPTORS: list[dict] = [
         },
     },
     {
+        # Phase 6 Ticket 6.3 — provider PDF reports.
+        "type": "function",
+        "function": {
+            "name": "generate_report",
+            "description": (
+                "Generate a multi-page PDF report for the user's CPAP "
+                "data + analytical findings + methodology disclosures. "
+                "Three templates: 'full_clinical_report' (8-12 pages, "
+                "annual review), 'summary_report' (2-3 pages, routine "
+                "follow-up), 'analytical_report' (4-6 pages, focused "
+                "on multivariate + lag + predictions). Use when the "
+                "user asks for a 'report for my doctor', 'summary for "
+                "my appointment', 'PDF I can bring' or similar. "
+                "In-app chat returns METADATA only (sections, methods, "
+                "page count, confidence); the PDF binary is downloaded "
+                "from the Reports page (/reports). After surfacing the "
+                "metadata, tell the user to open Reports to download. "
+                "Never summarize PDF contents verbatim — the PDF is "
+                "authoritative; use other tools (analyze_prediction, "
+                "analyze_multivariate_correlation, etc.) for "
+                "conversational follow-ups."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "template": {
+                        "type": "string",
+                        "enum": [
+                            "full_clinical_report",
+                            "summary_report",
+                            "analytical_report",
+                        ],
+                    },
+                    "start_date": {"type": "string"},
+                    "end_date": {"type": "string"},
+                },
+                "required": ["template", "start_date", "end_date"],
+            },
+        },
+    },
+    {
         # Phase 6 Ticket 6.2 — predictive modeling + counterfactuals.
         "type": "function",
         "function": {
@@ -572,6 +613,18 @@ _TOOL_ROUTING: dict[str, dict] = {
         "method": "POST",
         "path": "/api/v1/analytics/predict",
         "builder": _body_only,
+    },
+    # Phase 6 Ticket 6.3 — provider PDF reports. The AI proxy's
+    # in-app chat path doesn't deliver PDF bytes inline — the LLM
+    # surfaces the report metadata + an instruction to use the
+    # Reports page. So we route to /preview-metadata (GET, cheap)
+    # rather than /generate (POST, expensive WeasyPrint render).
+    # The user reads the metadata in chat and clicks through to
+    # /reports for the actual download.
+    "generate_report": {
+        "method": "GET",
+        "path": "/api/v1/reports/preview-metadata",
+        "builder": _no_body,
     },
     "get_trend": {
         "method": "GET",

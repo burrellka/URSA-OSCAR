@@ -16,7 +16,7 @@ from .ai_proxy.prompt import TemplateStore as AiTemplateStore
 from .ai_proxy.secrets import SecretStore, resolve_secret_key
 from .api import (
     ai, analytics, events, exports, exports_oscar, health, imports,
-    manual_logs, nights, profile, system, timeseries, vocab,
+    manual_logs, nights, profile, reports, system, timeseries, vocab,
 )
 from .config import get_settings
 from .services.import_worker import ImportWorker
@@ -122,6 +122,8 @@ def create_app() -> FastAPI:
     app.include_router(profile.router)
     app.include_router(analytics.router)
     app.include_router(ai.router)
+    # Phase 6 Ticket 6.3 — provider PDF reports.
+    app.include_router(reports.router)
 
     return app
 

@@ -1,0 +1,91 @@
+{% extends "_base.html" %}
+
+{% block report_h1 %}Analytical Report{% endblock %}
+{% block report_subtitle %}Focused on multivariate analysis, lag analysis, and predictions{% endblock %}
+
+{% block body %}
+
+{# Analytical template skips overview boilerplate and focuses on the
+   correlation / lag / prediction sections. Methodology still renders. #}
+
+<h2>Multivariate analysis</h2>
+{% if ctx.multivariate.insufficient_data %}
+  <div class="insufficient-data">
+    <span class="label">Insufficient data for multivariate analysis</span>
+    {{ ctx.multivariate.reason }}
+    {% if ctx.multivariate.n_observations is defined %}<br>(N observations: {{ ctx.multivariate.n_observations }}; need ≥ 15.){% endif %}
+  </div>
+{% else %}
+  <p>
+    Target: <code>{{ ctx.multivariate.target_metric }}</code>.
+    Predictors: {% for p in ctx.multivariate.controlled_for %}<code>{{ p }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+    N = <strong>{{ ctx.multivariate.n_observations }}</strong>.
+    Confidence: <strong>{{ ctx.multivariate.confidence_level }}</strong>.
+  </p>
+  <table>
+    <thead>
+      <tr><th>Predictor</th><th>Partial r</th><th>95% CI</th><th>p</th><th>Interpretation</th></tr>
+    </thead>
+    <tbody>
+      {% for p in ctx.multivariate.predictors %}
+        <tr>
+          <td><code>{{ p.metric }}</code></td>
+          <td class="numeric">{% if p.partial_r is not none %}{{ "%.3f"|format(p.partial_r) }}{% else %}—{% endif %}</td>
+          <td class="numeric">{% if p.ci_95[0] is not none and p.ci_95[1] is not none %}[{{ "%.2f"|format(p.ci_95[0]) }}, {{ "%.2f"|format(p.ci_95[1]) }}]{% else %}—{% endif %}</td>
+          <td class="numeric">{% if p.p_value is not none %}{{ "%.4f"|format(p.p_value) }}{% else %}—{% endif %}</td>
+          <td>{{ p.interpretation }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if ctx.multivariate.sample_caveat %}
+    <div class="callout callout-warn">{{ ctx.multivariate.sample_caveat }}</div>
+  {% endif %}
+{% endif %}
+
+<h2>Time-shifted lag analysis</h2>
+{% for la in ctx.lag_analyses %}
+  <h3><code>{{ la.metric_a }}</code> → <code>{{ la.metric_b }}</code></h3>
+  {% if la.insufficient_data %}
+    <div class="insufficient-data">
+      <span class="label">Insufficient data</span>
+      {{ la.reason }}
+    </div>
+  {% else %}
+    <p>
+      Peak lag: <strong>{{ la.peak_lag_days }} day(s)</strong>.
+      Peak r = {{ "%.3f"|format(la.peak_correlation) if la.peak_correlation is not none else "—" }}.
+      {% if la.clinical_note %}<br>{{ la.clinical_note }}{% endif %}
+    </p>
+  {% endif %}
+{% endfor %}
+
+<h2>Tonight's prediction</h2>
+{% if ctx.prediction.insufficient_data %}
+  <div class="insufficient-data">
+    <span class="label">Insufficient data for predictive modeling</span>
+    {{ ctx.prediction.reason }}
+  </div>
+{% else %}
+  <p>
+    Target: <code>{{ ctx.prediction.target_metric }}</code>.
+    Trained on <strong>{{ ctx.prediction.n_training_nights }}</strong> nights.
+    Confidence: <strong>{{ ctx.prediction.confidence_level }}</strong>.
+    CV R²: <strong>{{ "%.3f"|format(ctx.prediction.model_details.cross_validation_r2) }}</strong>.
+  </p>
+  <table>
+    <tbody>
+      <tr><th>Point estimate</th>
+          <td class="numeric"><strong>{{ "%.3f"|format(ctx.prediction.prediction.point_estimate) }}</strong></td></tr>
+      <tr><th>50% prediction interval</th>
+          <td class="numeric">{% if ctx.prediction.prediction.prediction_interval_50[0] is not none %}[{{ "%.2f"|format(ctx.prediction.prediction.prediction_interval_50[0]) }}, {{ "%.2f"|format(ctx.prediction.prediction.prediction_interval_50[1]) }}]{% else %}—{% endif %}</td></tr>
+      <tr><th>95% prediction interval</th>
+          <td class="numeric">{% if ctx.prediction.prediction.prediction_interval_95[0] is not none %}[{{ "%.2f"|format(ctx.prediction.prediction.prediction_interval_95[0]) }}, {{ "%.2f"|format(ctx.prediction.prediction.prediction_interval_95[1]) }}]{% else %}—{% endif %}</td></tr>
+    </tbody>
+  </table>
+  {% if ctx.prediction.sample_caveat %}
+    <div class="callout callout-warn">{{ ctx.prediction.sample_caveat }}</div>
+  {% endif %}
+{% endif %}
+
+{% endblock %}

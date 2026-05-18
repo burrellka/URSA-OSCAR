@@ -1,0 +1,84 @@
+{% extends "_base.html" %}
+
+{% block report_h1 %}Summary Report{% endblock %}
+{% block report_subtitle %}Condensed — overview, key trends, top correlations{% endblock %}
+
+{% block body %}
+
+{# Summary is intentionally narrow:
+   - Overview (compact)
+   - Trends for AHI + pressure only (drops the leak detail)
+   - 3 correlations (the most relevant pairs)
+   - No multivariate / lag / prediction sections in the body — those
+     show up as compressed callouts only if data was insufficient,
+     otherwise they're deferred to the full clinical report
+   The Methodology section in _base.html still renders for every
+   method that appeared. #}
+
+<h2>Overview</h2>
+{% if ctx.overview.insufficient_data %}
+  <div class="insufficient-data">
+    <span class="label">Insufficient data</span>
+    {{ ctx.overview.reason }}
+  </div>
+{% else %}
+  <table>
+    <tbody>
+      <tr><th>Nights recorded</th><td class="numeric">{{ ctx.overview.n_nights }}</td></tr>
+      <tr><th>Date range</th>
+          <td>{{ ctx.overview.earliest_date }} to {{ ctx.overview.latest_date }}</td></tr>
+      {% if ctx.overview.mean_total_ahi is not none %}
+        <tr><th>Mean AHI</th><td class="numeric">{{ "%.2f"|format(ctx.overview.mean_total_ahi) }}</td></tr>
+      {% endif %}
+      {% if ctx.overview.mean_hours_per_night is not none %}
+        <tr><th>Mean hours per night</th><td class="numeric">{{ "%.2f"|format(ctx.overview.mean_hours_per_night) }}</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+{% endif %}
+
+<h2>Key trends</h2>
+{% for trend, label in [(ctx.trend_total_ahi, "Total AHI"), (ctx.trend_p95_pressure, "95th-percentile pressure")] %}
+  <h3>{{ label }}</h3>
+  {% if trend.insufficient_data %}
+    <div class="insufficient-data">
+      <span class="label">Insufficient data</span>
+      {{ trend.reason }}
+    </div>
+  {% else %}
+    <p>
+      Slope per day: <strong>{% if trend.slope_per_day is not none %}{{ "%.4f"|format(trend.slope_per_day) }}{% else %}—{% endif %}</strong>
+      &middot; R² = {% if trend.r_squared is not none %}{{ "%.3f"|format(trend.r_squared) }}{% else %}—{% endif %}
+      &middot; p = {% if trend.p_value is not none %}{{ "%.4f"|format(trend.p_value) }}{% else %}—{% endif %}
+      &middot; n = {{ trend.n_nights }}
+    </p>
+    <p class="muted">{{ trend.interpretation_text or trend.interpretation }}</p>
+  {% endif %}
+{% endfor %}
+
+<h2>Top correlations</h2>
+<table>
+  <thead><tr><th>Metric A</th><th>Metric B</th><th>r</th><th>p</th><th>n</th></tr></thead>
+  <tbody>
+    {% for c in ctx.pairwise_correlations[:3] %}
+      <tr>
+        <td><code>{{ c.metric_a }}</code></td>
+        <td><code>{{ c.metric_b }}</code></td>
+        {% if c.insufficient_data %}
+          <td colspan="3" class="muted">Insufficient data</td>
+        {% else %}
+          <td class="numeric">{% if c.pearson_r is not none %}{{ "%.3f"|format(c.pearson_r) }}{% else %}—{% endif %}</td>
+          <td class="numeric">{% if c.p_value is not none %}{{ "%.4f"|format(c.p_value) }}{% else %}—{% endif %}</td>
+          <td class="numeric">{{ c.n_pairs or 0 }}</td>
+        {% endif %}
+      </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="muted" style="font-size: 9pt;">
+  Multivariate, lag, and prediction analyses are documented in the Full
+  Clinical Report variant. This Summary report focuses on overview-level
+  metrics suitable for routine follow-up appointments.
+</p>
+
+{% endblock %}

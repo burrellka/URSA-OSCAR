@@ -6,6 +6,7 @@ import Statistics from './pages/Statistics';
 import Events from './pages/Events';
 import ImportPage from './pages/Import';
 import ExportPage from './pages/Export';
+import Reports from './pages/Reports';
 import Trends from './pages/Trends';
 import ManualLogs from './pages/ManualLogs';
 import Profile from './pages/Profile';
@@ -26,6 +27,7 @@ export default function App() {
           <Route path="import" element={<ImportPage />} />
           <Route path="export" element={<ExportPage />} />
           <Route path="trends" element={<Trends />} />
+          <Route path="reports" element={<Reports />} />
           <Route path="logs" element={<ManualLogs />} />
           <Route path="profile" element={<Profile />} />
           <Route path="settings" element={<Settings />} />

@@ -381,6 +381,61 @@ export const api = {
     }),
 
   // =====================================================================
+  // Phase 6 Ticket 6.3 — provider PDF reports.
+  // =====================================================================
+
+  /** Preview metadata: what's in the PDF before generating. */
+  previewReportMetadata: (params: {
+    template: 'full_clinical_report' | 'summary_report' | 'analytical_report';
+    start_date: string;
+    end_date: string;
+  }) =>
+    request<{
+      template: string;
+      template_label: string;
+      estimated_page_count: number;
+      sections_included: string[];
+      sections_with_insufficient_data: string[];
+      n_nights_in_range: number;
+      confidence_level_for_predictions: string | null;
+      methods_used: string[];
+      methodology_section_includes: string[];
+      pdf_bytes: number;
+      generated_at: string;
+      date_range_start: string;
+      date_range_end: string;
+    }>(`${BASE}/reports/preview-metadata`, {}, params),
+
+  /** Build the URL for the PDF download (browser navigates to it). */
+  generateReportUrl: () => `${BASE}/reports/generate`,
+
+  /** Trigger generation via fetch + download as a Blob. Used by the
+   *  UI's "Generate PDF" button so we can show progress + handle
+   *  errors instead of relying on the browser's blind navigation. */
+  generateReportBlob: async (body: {
+    template: 'full_clinical_report' | 'summary_report' | 'analytical_report';
+    start_date: string;
+    end_date: string;
+    recompute?: boolean;
+  }) => {
+    const res = await fetch(`${BASE}/reports/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let detail: unknown;
+      try { detail = await res.json(); } catch { detail = await res.text(); }
+      throw new ApiError(res.status, `POST /reports/generate -> ${res.status}`, detail);
+    }
+    const cd = res.headers.get('content-disposition') ?? '';
+    const m = /filename="([^"]+)"/.exec(cd);
+    const filename = m?.[1] ?? 'URSA-OSCAR-report.pdf';
+    const blob = await res.blob();
+    return { blob, filename };
+  },
+
+  // =====================================================================
   // Phase 3 hard-delete purge.
   // =====================================================================
   previewDelete: (start_date: string, end_date: string) =>

@@ -31,6 +31,7 @@ from .tools import (  # noqa: E402 (import after FastMCP instantiation is requir
     analyze_lag_correlation,            # Phase 6 Ticket 6.1 Item 3
     analyze_multivariate_correlation,   # Phase 6 Ticket 6.1 Item 2
     analyze_prediction,                 # Phase 6 Ticket 6.2
+    generate_report,                    # Phase 6 Ticket 6.3
     compare_periods,                    # Phase 3 Item 5A (Tier 2)
     event_distribution,
     get_manual_log_summary,             # Phase 3 Item 5D (Tier 2)

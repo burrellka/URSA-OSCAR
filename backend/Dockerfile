@@ -15,10 +15,24 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# System deps: pyedflib + mne build wheels via numpy; need libgomp for numpy SIMD
+# System deps:
+#   - build-essential, libgomp1: pyedflib + mne + numpy SIMD
+#   - Phase 6 Ticket 6.3: WeasyPrint requires Pango, Cairo, fontconfig,
+#     and a font with broad Unicode coverage for PDF rendering. The
+#     Liberation fonts are a clean, license-permissive default; we
+#     could swap to bundled fonts later for byte-identical PDF outputs
+#     across hosts, but the system fonts are good enough for v1.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         libgomp1 \
+        libpango-1.0-0 \
+        libpangoft2-1.0-0 \
+        libcairo2 \
+        libffi-dev \
+        shared-mime-info \
+        fontconfig \
+        fonts-liberation \
+        fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 COPY backend/pyproject.toml ./pyproject.toml
