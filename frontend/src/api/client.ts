@@ -513,6 +513,17 @@ export const api = {
       { method: 'PUT', body: JSON.stringify({ template }) },
     ),
 
+  // 0.11.1 — reset to the in-code DEFAULT_TEMPLATE shipped with the
+  // running API image. Drops the operator's saved file, so subsequent
+  // GETs return source='default'. Useful when a new image ships
+  // richer template content and the operator wants to adopt the
+  // upstream version rather than stay forked on their old saved file.
+  resetSystemPromptTemplateToDefault: () =>
+    request<{ template: string; source: 'default' | 'file' }>(
+      `${BASE}/ai/system-prompt/template`,
+      { method: 'DELETE' },
+    ),
+
   testAiProvider: (provider_id: string) =>
     request<AiTestResult>(`${BASE}/ai/test`, {
       method: 'POST',

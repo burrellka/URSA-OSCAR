@@ -21,7 +21,7 @@
  */
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Bot, CheckCircle2, RotateCcw, Save, XCircle, Loader2 } from 'lucide-react';
+import { Bot, CheckCircle2, RefreshCw, RotateCcw, Save, XCircle, Loader2 } from 'lucide-react';
 import { api, ApiError } from '../api/client';
 import type { AiMaskedConfig, AiProviderPreset, AiTestResult } from '../api/types';
 
@@ -129,6 +129,44 @@ export default function SettingsAi() {
       setTemplate(result.template);
       setTemplateSource(result.source);
       setTemplateActionMsg(`Template saved (${result.template.length} chars).`);
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : String(e));
+    } finally {
+      setTemplateSaving(false);
+    }
+  }
+
+  // 0.11.1 — Reset to factory default: drop the saved template file
+  // and reload the in-code DEFAULT_TEMPLATE that shipped with the
+  // running API image. Useful after a new image release that ships
+  // richer template content (added sections, refined guidance) when
+  // the operator wants to adopt the upstream default rather than
+  // stay forked on their old saved file.
+  async function onResetToFactoryDefault() {
+    if (!confirm(
+      "Reset to the factory-default template?\n\n"
+      + "This will DELETE your saved template on the server and reload "
+      + "the built-in default that ships with the running API image. "
+      + "Use this when a new release adds template sections you want "
+      + "to adopt (e.g., new statistical-confidence or prediction-"
+      + "surfacing guidance from a Phase 6 update).\n\n"
+      + "Your per-provider override field is NOT changed by this — "
+      + "after the reset, click Restore from template to also reload "
+      + "the field, or Save to copy the factory default to your "
+      + "active provider's prompt.\n\n"
+      + "Continue?",
+    )) return;
+    setTemplateSaving(true);
+    setError(null);
+    setTemplateActionMsg(null);
+    try {
+      const result = await api.resetSystemPromptTemplateToDefault();
+      setTemplate(result.template);
+      setTemplateSource(result.source);
+      setTemplateActionMsg(
+        `Reset to factory default (${result.template.length} chars). `
+        + `Click Restore from template to reload the instruction field too.`,
+      );
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e));
     } finally {
@@ -476,6 +514,21 @@ export default function SettingsAi() {
           >
             {templateSaving ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
             {templateSaving ? 'Saving…' : 'Save to template'}
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            onClick={onResetToFactoryDefault}
+            disabled={templateSaving}
+            title={
+              "Drop the saved template file on the server and revert to "
+              + "the in-code DEFAULT_TEMPLATE that ships with the running "
+              + "API image. Useful when a new release adds template content "
+              + "you want to adopt."
+            }
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}
+          >
+            <RefreshCw size={14} /> Reset to factory default
           </button>
           <span style={{
             fontSize: '0.75rem',

@@ -551,6 +551,48 @@ def test_template_endpoint_get_returns_default_on_fresh_install(ai_test_client):
     assert body["template"] == DEFAULT_TEMPLATE
 
 
+def test_template_endpoint_delete_resets_to_default(ai_test_client):
+    """0.11.1 — DELETE drops the saved file and returns DEFAULT_TEMPLATE
+    with source='default'. The UX path is: operator forked from default
+    in an old image, new image ships richer template, operator clicks
+    'Reset to factory default' to adopt the upstream content."""
+    from ursa_oscar.ai_proxy.prompt import DEFAULT_TEMPLATE
+
+    # 1. Save a custom template (puts the file on disk).
+    custom = "Operator's custom template\nwith a marker line\n"
+    r = ai_test_client.put(
+        "/api/v1/ai/system-prompt/template",
+        json={"template": custom},
+    )
+    assert r.status_code == 200
+    assert r.json()["source"] == "file"
+
+    # 2. DELETE → returns DEFAULT_TEMPLATE with source='default'.
+    r2 = ai_test_client.delete("/api/v1/ai/system-prompt/template")
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["source"] == "default"
+    assert body["template"] == DEFAULT_TEMPLATE
+    assert "with a marker line" not in body["template"]
+
+    # 3. Subsequent GETs also see source='default' (file is really gone).
+    r3 = ai_test_client.get("/api/v1/ai/system-prompt/template")
+    assert r3.status_code == 200
+    assert r3.json()["source"] == "default"
+
+
+def test_template_endpoint_delete_is_idempotent(ai_test_client):
+    """DELETE on a fresh install (no file ever saved) succeeds and
+    returns DEFAULT_TEMPLATE. Idempotent so the UI button can be
+    clicked twice without surfacing an error."""
+    from ursa_oscar.ai_proxy.prompt import DEFAULT_TEMPLATE
+    r = ai_test_client.delete("/api/v1/ai/system-prompt/template")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["source"] == "default"
+    assert body["template"] == DEFAULT_TEMPLATE
+
+
 def test_template_endpoint_put_persists_then_get_returns_file(ai_test_client):
     """PUT writes the file; the next GET returns the new content with
     source='file'. This is the round-trip the Settings UI does when the

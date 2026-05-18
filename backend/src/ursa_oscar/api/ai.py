@@ -243,6 +243,24 @@ def put_system_prompt_template(
     return TemplateResponse(template=text, source=source)
 
 
+@router.delete("/system-prompt/template", response_model=TemplateResponse)
+def delete_system_prompt_template(request: Request) -> TemplateResponse:
+    """0.11.1 — Reset to the in-code DEFAULT_TEMPLATE shipped with this
+    image. Deletes the operator's saved ``/data/system_prompt_template.txt``
+    file and returns the factory-default content with source='default'.
+
+    Useful when a new image ships richer template content (added
+    sections, refined guidance) and the operator wants to adopt the
+    upstream default rather than stay forked on their saved file. The
+    operator can then "Save to template" again to re-fork from the
+    new baseline, or leave the file deleted to track DEFAULT_TEMPLATE
+    going forward."""
+    store = request.app.state.ai_template_store
+    store.reset()
+    text, source = store.get_template()
+    return TemplateResponse(template=text, source=source)
+
+
 # -------------------------------------------------------------------------
 # /ai/test — connection probe.
 # -------------------------------------------------------------------------
