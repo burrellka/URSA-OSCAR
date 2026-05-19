@@ -10,7 +10,7 @@ networks:
 
 services:
   ursa-oscar-api:
-    image: brain40/ursa-oscar-api:0.13.5
+    image: brain40/ursa-oscar-api:0.13.6
     container_name: ursa-oscar-api
     environment:
       URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
@@ -40,7 +40,7 @@ services:
       # version chips read these env vars, and any drift between
       # `:latest` and the cosmetic chip caused operator confusion during
       # the Phase 5 patch cycle.
-      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-0.13.5}
+      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-0.13.6}
       URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-0.11.1}
       URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-0.13.2}
       URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-0.10.1}

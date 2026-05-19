@@ -176,6 +176,20 @@ class ClaudeAdapter(ProviderAdapter):
                     },
                 )
 
+            # Phase 6.5 — log cache hit/miss at DEBUG so the operator
+            # can verify caching is engaged. cache_read_input_tokens > 0
+            # on the 2nd+ identical request means the prefix matched
+            # and the cached portion was served at ~10% cost.
+            if usage:
+                logger.debug(
+                    "claude.chat: usage input=%s output=%s "
+                    "cache_creation=%s cache_read=%s",
+                    usage.get("input_tokens"),
+                    usage.get("output_tokens"),
+                    usage.get("cache_creation_input_tokens"),
+                    usage.get("cache_read_input_tokens"),
+                )
+
             yield AiStreamEvent(
                 event_type="complete",
                 payload={"stop_reason": stop_reason, "usage": usage},
@@ -287,21 +301,49 @@ class ClaudeAdapter(ProviderAdapter):
 
             anthropic_messages.append({"role": msg.role, "content": msg.content})
 
+        # Phase 6.5 — prompt caching for the system prompt + tools list.
+        #
+        # Anthropic's caching API: each cacheable segment is a content
+        # block with cache_control={"type": "ephemeral"}. The marker
+        # tells Anthropic "everything up to and including this block is
+        # the cache prefix." Subsequent identical requests with the
+        # same prefix get billed at ~10% for the cached portion.
+        #
+        # We cache:
+        #   1. The system prompt — same across every turn of a session.
+        #   2. The full tools list — same across every turn (operators
+        #      don't re-register tools at runtime). Only the LAST tool
+        #      block needs cache_control; Anthropic treats everything
+        #      up to that marker as the prefix.
+        # Messages stay unmarked — they grow per turn and shouldn't be
+        # part of the cache prefix.
+        anthropic_tools = [
+            {
+                "name": t["function"]["name"],
+                "description": t["function"]["description"],
+                "input_schema": t["function"]["parameters"],
+            }
+            for t in tools
+        ]
+        if anthropic_tools:
+            anthropic_tools[-1]["cache_control"] = {"type": "ephemeral"}
+
         request = {
             "model": self.model,
             "max_tokens": 4096,
-            "system": system_prompt,
-            "messages": anthropic_messages,
-            # Anthropic tools shape — convert from OpenAI's
-            # ``{"type": "function", "function": {...}}`` wrapper.
-            "tools": [
+            # System prompt as a list of content blocks so we can
+            # attach cache_control. The single-string form
+            # (``system="..."``) is also valid Anthropic API but
+            # can't carry cache markers.
+            "system": [
                 {
-                    "name": t["function"]["name"],
-                    "description": t["function"]["description"],
-                    "input_schema": t["function"]["parameters"],
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
                 }
-                for t in tools
             ],
+            "messages": anthropic_messages,
+            "tools": anthropic_tools,
         }
         return request
 
