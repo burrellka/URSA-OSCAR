@@ -55,6 +55,7 @@ from ursa_oscar.reports.methodology_registry import (
 )
 from ursa_oscar.storage.db import DuckDBManager
 from ursa_oscar.storage.migrations import apply_migrations
+from tests.conftest import bypass_auth
 
 
 # ----------------------------------------------------------------------
@@ -396,6 +397,7 @@ def api_client(tmp_path, monkeypatch):
     )
 
     app = create_app()
+    bypass_auth(app)  # Phase 6.4
     with TestClient(app) as client:
         yield client
     _config_mod._settings = None

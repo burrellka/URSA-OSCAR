@@ -46,6 +46,12 @@ dependencies = [
     # are installed in the API Dockerfile.
     "Jinja2>=3.1.2",
     "WeasyPrint>=60.0",
+    # Phase 6.4 — single-user authentication.
+    #   passlib[argon2] pulls in argon2-cffi as the underlying C
+    #   implementation. OWASP-recommended Argon2id for password hashing.
+    #   python-jose[cryptography] for HS256 JWT signing/verification.
+    "passlib[argon2]>=1.7.4",
+    "python-jose[cryptography]>=3.3.0",
 ]
 
 [project.optional-dependencies]

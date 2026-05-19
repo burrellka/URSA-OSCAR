@@ -31,6 +31,38 @@ export class ApiError extends Error {
   }
 }
 
+// Phase 6.4 — auth-aware response handling.
+//
+// Two changes from the pre-auth client:
+//   1. credentials: 'include' so the httpOnly session cookie travels
+//      with every fetch (same-origin in production behind nginx;
+//      cross-origin in dev via Vite proxy where Vite forwards cookies
+//      correctly).
+//   2. 401 → automatic redirect to /login (with the current pathname
+//      saved in sessionStorage so post-login we route back). Auth
+//      endpoints + the /login + /setup pages themselves are exempt;
+//      they handle 401 inline.
+//
+// The ApiError is still thrown for callers that want to handle it,
+// but the redirect happens in parallel — most callers don't need to
+// know.
+
+const _AUTH_PATHS = ['/api/v1/auth/'];
+const _NO_REDIRECT_LOCATIONS = ['/login', '/setup'];
+
+function _maybeRedirectOn401(path: string): void {
+  if (_AUTH_PATHS.some((p) => path.startsWith(p))) return;
+  if (typeof window === 'undefined') return;
+  const here = window.location.pathname + window.location.search;
+  if (_NO_REDIRECT_LOCATIONS.some((p) => window.location.pathname.startsWith(p))) {
+    return;
+  }
+  try {
+    sessionStorage.setItem('ursa_oscar_return_to', here);
+  } catch { /* sessionStorage disabled — fine, default redirect to / */ }
+  window.location.assign('/login');
+}
+
 async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -57,10 +89,17 @@ async function request<T>(
   if (init.body && !('Content-Type' in headers)) {
     headers['Content-Type'] = 'application/json';
   }
-  const res = await fetch(url, { ...init, headers });
+  const res = await fetch(url, {
+    ...init,
+    headers,
+    credentials: 'include',  // 0.13.0 — session cookie
+  });
   if (!res.ok) {
     let body: unknown;
     try { body = await res.json(); } catch { body = await res.text().catch(() => undefined); }
+    if (res.status === 401) {
+      _maybeRedirectOn401(path);
+    }
     throw new ApiError(res.status, `${init.method ?? 'GET'} ${path} -> ${res.status}`, body);
   }
   if (res.status === 204) return undefined as T;
@@ -702,6 +741,52 @@ export const api = {
       dlog(`stream ended after ${frameCount} events`);
     }
   },
+
+  // =====================================================================
+  // Phase 6.4 — auth.
+  //
+  // Backend cookie + JWT model:
+  //   - login/bootstrap/change-password issue a session JWT (24h) and
+  //     ALSO set it as an httpOnly cookie. Browser requests ride the
+  //     cookie; the `token` in the response body is only useful when a
+  //     non-browser client is calling these endpoints (the MCP server
+  //     and watcher use generateApiToken instead).
+  //   - generateApiToken returns a 90d JWT meant for service-to-service
+  //     bearer usage. Server does NOT store it — its validity is the
+  //     HS256 signature.
+  // =====================================================================
+
+  bootstrapStatus: () =>
+    request<{ bootstrapped: boolean }>(`${BASE}/auth/bootstrap-status`),
+
+  bootstrap: (password: string) =>
+    request<AuthTokenResponse>(`${BASE}/auth/bootstrap`, {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+
+  login: (password: string) =>
+    request<AuthTokenResponse>(`${BASE}/auth/login`, {
+      method: 'POST',
+      body: JSON.stringify({ password }),
+    }),
+
+  logout: () =>
+    request<{ ok: boolean }>(`${BASE}/auth/logout`, { method: 'POST' }),
+
+  sessionInfo: () =>
+    request<AuthSessionResponse>(`${BASE}/auth/session`),
+
+  changePassword: (current_password: string, new_password: string) =>
+    request<AuthTokenResponse>(`${BASE}/auth/change-password`, {
+      method: 'POST',
+      body: JSON.stringify({ current_password, new_password }),
+    }),
+
+  generateApiToken: () =>
+    request<AuthTokenResponse>(`${BASE}/auth/generate-api-token`, {
+      method: 'POST',
+    }),
 };
 
 
@@ -815,4 +900,25 @@ export interface VerifyMcpResult {
   checks: VerifyMcpCheck[];
   all_passed: boolean;
   ran_at: string;
+}
+
+// =====================================================================
+// Phase 6.4 — auth response shapes (mirror backend TokenResponse /
+// SessionResponse).
+// =====================================================================
+
+export interface AuthTokenResponse {
+  ok: boolean;
+  token: string;
+  /** "session" (24h, cookie + body) or "api" (90d, body only). */
+  token_kind: 'session' | 'api';
+  expires_at_iso: string;
+}
+
+export interface AuthSessionResponse {
+  user: string;
+  token_kind: 'session' | 'api';
+  issued_at_iso: string;
+  expires_at_iso: string;
+  expires_in_seconds: number;
 }

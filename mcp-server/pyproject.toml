@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ursa-oscar-mcp"
-version = "0.7.0"
+version = "0.11.1"
 description = "URSA-OSCAR MCP server — lifted from APEX template (Decision 10, ADR-002)"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,9 @@ dependencies = [
     "uvicorn==0.46.0",
     "python-multipart>=0.0.27",
     "httpx>=0.27",
+    # Phase 6.4 — JWT bearer auth path (decode only; same algo + secret
+    # as the API container).
+    "python-jose[cryptography]>=3.3.0",
 ]
 
 [project.optional-dependencies]

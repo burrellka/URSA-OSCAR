@@ -34,3 +34,31 @@ def temp_db(tmp_path: Path) -> DuckDBManager:
     apply_migrations(db)
     yield db
     db.close()
+
+
+# Phase 6.4 — every test that uses TestClient(app) needs to bypass the
+# require_auth dependency so existing endpoint tests don't have to mint
+# a JWT cookie. The one exception is `test_auth.py`, which is testing
+# the auth flow itself and intentionally goes through the real
+# bootstrap → login → require_auth path.
+def bypass_auth(app) -> None:
+    """Apply a no-op override to FastAPI's ``require_auth`` dependency.
+
+    Call from any TestClient fixture immediately before constructing
+    the client. The override returns a fake-but-valid claims dict so
+    routes that use ``Depends(require_auth)`` as a body-injected
+    parameter still receive a coherent value if they reference it.
+
+    Idempotent — calling twice on the same app is fine.
+    """
+    from ursa_oscar.auth import require_auth
+
+    def _fake_claims() -> dict:
+        return {
+            "sub": "operator",
+            "kind": "session",
+            "iat": 0,
+            "exp": 9_999_999_999,
+        }
+
+    app.dependency_overrides[require_auth] = _fake_claims

@@ -10,7 +10,7 @@ networks:
 
 services:
   ursa-oscar-api:
-    image: brain40/ursa-oscar-api:0.12.0
+    image: brain40/ursa-oscar-api:0.13.1
     container_name: ursa-oscar-api
     environment:
       URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
@@ -24,6 +24,12 @@ services:
       URSA_OSCAR_MCP_BEARER_TOKEN: ${URSA_OSCAR_MCP_BEARER_TOKEN}
       URSA_OSCAR_MCP_OAUTH_CLIENT_ID: ${URSA_OSCAR_MCP_OAUTH_CLIENT_ID}
       URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET}
+      # Phase 6.4 — JWT signing secret. Shared with the MCP container
+      # so it can verify operator-issued JWTs as bearer tokens.
+      # OPTIONAL: if unset, the API auto-generates a per-instance secret
+      # at /data/jwt_secret on first boot (mode 0600). Set explicitly
+      # only when you want to manage rotation yourself.
+      URSA_OSCAR_JWT_SECRET: ${URSA_OSCAR_JWT_SECRET:-}
       # Image versions surfaced in the Settings page. Set via the build
       # script (build_and_push.ps1 --Version 0.4.0 -> baked into each
       # image's ENV URSA_OSCAR_IMAGE_VERSION) and threaded to the API via
@@ -34,10 +40,10 @@ services:
       # version chips read these env vars, and any drift between
       # `:latest` and the cosmetic chip caused operator confusion during
       # the Phase 5 patch cycle.
-      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-0.12.0}
-      URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-0.10.0}
-      URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-0.12.0}
-      URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-0.9.0}
+      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-0.13.1}
+      URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-0.11.1}
+      URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-0.13.0}
+      URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-0.10.1}
     networks:
       - kairos-net
     volumes:
@@ -46,7 +52,7 @@ services:
     restart: unless-stopped
 
   ursa-oscar-mcp:
-    image: brain40/ursa-oscar-mcp:0.10.0
+    image: brain40/ursa-oscar-mcp:0.11.1
     container_name: ursa-oscar-mcp
     environment:
       # MCP reads from the API container over kairos-net (no direct DuckDB
@@ -63,17 +69,31 @@ services:
       #   python -c "import secrets; print(secrets.token_urlsafe(32))"   # SECRET
       URSA_OSCAR_MCP_OAUTH_CLIENT_ID: ${URSA_OSCAR_MCP_OAUTH_CLIENT_ID}
       URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET}
+      # Phase 6.4 — JWT signing secret shared with the API. Used to
+      # VERIFY operator-issued JWTs presented to /sse as bearer tokens.
+      # OPTIONAL: when unset, the MCP container falls back to
+      # /data/jwt_secret (auto-shared via the mounted data volume).
+      URSA_OSCAR_JWT_SECRET: ${URSA_OSCAR_JWT_SECRET:-}
+      # Phase 6.4.1 — outgoing API bearer token. OPTIONAL override; when
+      # unset, the MCP container auto-reads /data/service_tokens/mcp.jwt
+      # which the API container auto-mints + auto-rotates. Set explicitly
+      # only when you want manual control over the service credential.
+      URSA_OSCAR_MCP_API_TOKEN: ${URSA_OSCAR_MCP_API_TOKEN:-}
     networks:
       - kairos-net
     ports:
       # Host 8085 (8082 is taken on kairos-net by localrecall) -> container 8000
       - "8085:8000"
+    volumes:
+      # Shared data volume — used so MCP can read /data/jwt_secret when
+      # URSA_OSCAR_JWT_SECRET isn't set in env. Read-only is sufficient.
+      - /srv/ursa-oscar/data:/data:ro
     restart: unless-stopped
     depends_on:
       - ursa-oscar-api
 
   ursa-oscar-web:
-    image: brain40/ursa-oscar-web:0.12.0
+    image: brain40/ursa-oscar-web:0.13.0
     container_name: ursa-oscar-web
     networks:
       - kairos-net
@@ -82,8 +102,14 @@ services:
     restart: unless-stopped
 
   ursa-oscar-watcher:
-    image: brain40/ursa-oscar-watcher:0.9.0
+    image: brain40/ursa-oscar-watcher:0.10.1
     container_name: ursa-oscar-watcher
+    environment:
+      # Phase 6.4.1 — outgoing API bearer token. OPTIONAL override; when
+      # unset, the watcher auto-reads /data/service_tokens/watcher.jwt
+      # which the API container auto-mints + auto-rotates. Set explicitly
+      # only when you want manual control over the service credential.
+      URSA_OSCAR_WATCHER_TOKEN: ${URSA_OSCAR_WATCHER_TOKEN:-}
     networks:
       - kairos-net
     volumes:

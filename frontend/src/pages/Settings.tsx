@@ -159,6 +159,17 @@ export default function Settings() {
         )}
       </div>
 
+      {/* --- Account link (Phase 6.4) -------------------------------------- */}
+      <div className="chart-card" style={{ marginBottom: '1rem' }}>
+        <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem' }}>Account</h2>
+        <p style={{ marginBottom: '0.75rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+          Change the operator password and generate long-lived API
+          tokens for the watcher, MCP server, or external scripts.
+          View the current session expiration.
+        </p>
+        <a href="/settings/account" className="btn-secondary">Open Account →</a>
+      </div>
+
       {/* --- Data Management link ------------------------------------------ */}
       <div className="chart-card" style={{ marginBottom: '1rem' }}>
         <h2 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem' }}>Data Management</h2>

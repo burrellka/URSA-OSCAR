@@ -8,12 +8,21 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .ai_proxy.config_store import ConfigStore as AiConfigStore
 from .ai_proxy.prompt import TemplateStore as AiTemplateStore
 from .ai_proxy.secrets import SecretStore, resolve_secret_key
+from .auth import require_auth
+from .auth.rate_limit import LoginRateLimiter
+from .auth.routes import router as auth_router
+from .auth.store import AuthStore
+from .auth.service_tokens import (
+    ServiceTokenError,
+    ensure_all_service_tokens,
+)
+from .auth.tokens import resolve_jwt_secret
 from .api import (
     ai, analytics, events, exports, exports_oscar, health, imports,
     manual_logs, nights, profile, reports, system, timeseries, vocab,
@@ -72,6 +81,32 @@ async def lifespan(app: FastAPI):
         store_path=data_dir / "system_prompt_template.txt",
     )
 
+    # Phase 6.4 — single-user auth. JWT secret resolution mirrors
+    # Phase 5's master.key flow: env override > persistent file >
+    # first-boot generation. AuthStore manages /data/auth.json
+    # (bootstrap state + password hash). LoginRateLimiter is in-memory.
+    app.state.jwt_secret = resolve_jwt_secret(data_dir)
+    app.state.auth_store = AuthStore(store_path=data_dir / "auth.json")
+    app.state.auth_limiter = LoginRateLimiter()
+
+    # Phase 6.4.1 — auto-mint service tokens for the MCP + watcher
+    # containers. Mirrors the master.key auto-resolve pattern: missing
+    # or expiring tokens are silently re-minted at startup, so the
+    # operator never has to babysit copy-paste flows.
+    try:
+        ensure_all_service_tokens(data_dir, app.state.jwt_secret)
+    except ServiceTokenError:
+        # Logged at ERROR level inside the resolver; we don't want to
+        # take down the API over a service-token issue (the operator
+        # can still set the explicit env-var overrides as a fallback).
+        # But we DO surface it loudly.
+        import logging as _logging
+        _logging.getLogger(__name__).exception(
+            "Phase 6.4.1 service-token bootstrap failed — MCP and watcher "
+            "will need explicit URSA_OSCAR_MCP_API_TOKEN / "
+            "URSA_OSCAR_WATCHER_TOKEN env vars to function."
+        )
+
     worker = ImportWorker(db)
     worker.start()
     app.state.import_worker = worker
@@ -105,25 +140,41 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Phase 6.4 — Auth boundary.
+    #
+    # Two routers are AUTH-OPEN per Decision 7:
+    #   - health.router      — `/healthz` (Docker healthcheck, monitoring)
+    #   - auth_router        — `/api/v1/auth/*` (the auth endpoints
+    #                          themselves; they handle their own
+    #                          credential checks internally)
+    #
+    # Every other router gets `Depends(require_auth)` applied at the
+    # include_router level. One line, all routes on the router
+    # protected. Decision 7 wins by construction: a developer who adds
+    # a new endpoint to an existing protected router can't forget to
+    # auth-guard it.
     app.include_router(health.router)
-    app.include_router(nights.router)
-    app.include_router(events.router)
-    app.include_router(timeseries.router)
-    app.include_router(imports.router)
+    app.include_router(auth_router)
+
+    _AUTH_REQUIRED = [Depends(require_auth)]
+    app.include_router(nights.router, dependencies=_AUTH_REQUIRED)
+    app.include_router(events.router, dependencies=_AUTH_REQUIRED)
+    app.include_router(timeseries.router, dependencies=_AUTH_REQUIRED)
+    app.include_router(imports.router, dependencies=_AUTH_REQUIRED)
     # vocab MUST be registered before manual_logs so its more-specific
     # /api/v1/manual-logs/vocab path wins over manual_logs's /{log_id}
     # pattern, which would otherwise match 'vocab' as a stringified id
     # and fail validation with 422.
-    app.include_router(vocab.router)
-    app.include_router(manual_logs.router)
-    app.include_router(exports.router)
-    app.include_router(exports_oscar.router)
-    app.include_router(system.router)
-    app.include_router(profile.router)
-    app.include_router(analytics.router)
-    app.include_router(ai.router)
+    app.include_router(vocab.router, dependencies=_AUTH_REQUIRED)
+    app.include_router(manual_logs.router, dependencies=_AUTH_REQUIRED)
+    app.include_router(exports.router, dependencies=_AUTH_REQUIRED)
+    app.include_router(exports_oscar.router, dependencies=_AUTH_REQUIRED)
+    app.include_router(system.router, dependencies=_AUTH_REQUIRED)
+    app.include_router(profile.router, dependencies=_AUTH_REQUIRED)
+    app.include_router(analytics.router, dependencies=_AUTH_REQUIRED)
+    app.include_router(ai.router, dependencies=_AUTH_REQUIRED)
     # Phase 6 Ticket 6.3 — provider PDF reports.
-    app.include_router(reports.router)
+    app.include_router(reports.router, dependencies=_AUTH_REQUIRED)
 
     return app
 

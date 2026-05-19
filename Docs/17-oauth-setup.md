@@ -15,6 +15,8 @@ This is a deliberate security posture: with DCR enabled, anyone who reached `htt
 
 The legacy static `URSA_OSCAR_MCP_BEARER_TOKEN` path is unchanged. curl, Claude Desktop, and Claude Code keep working with the same token.
 
+**Phase 6.4 (MCP ≥ 0.11.0):** a third bearer kind is now accepted alongside OAuth + static bearer — an **operator JWT** signed by the API container's shared `URSA_OSCAR_JWT_SECRET`. Any token generated via the web UI (Settings → Account → Generate API Token) is accepted on `/sse` as `Authorization: Bearer <jwt>`. This is what the watcher uses on its outgoing API calls and what scripts should use when they need an MCP bearer without running the OAuth dance. claude.ai still uses OAuth — JWT is purely additive.
+
 ---
 
 ## Prerequisites
@@ -157,9 +159,9 @@ What stops a randomly-arrived attacker who knows the URL:
 | `/register` | **404 — DCR disabled.** Attackers can't self-mint clients. |
 | `/authorize` | Rejects unknown `client_id`. Only the env-pinned client can pass. |
 | `/token` | Rejects mismatched `client_secret`. PKCE prevents code interception. |
-| `/sse`, `/messages/` | Bearer-gated. The only ways to get a valid bearer are (a) the OAuth dance with the right client_id+secret or (b) the static `URSA_OSCAR_MCP_BEARER_TOKEN`. |
+| `/sse`, `/messages/` | Bearer-gated. The only ways to get a valid bearer are (a) the OAuth dance with the right client_id+secret, (b) the static `URSA_OSCAR_MCP_BEARER_TOKEN`, or (c) a JWT signed by the operator's `URSA_OSCAR_JWT_SECRET` (Phase 6.4+). |
 
-The effective auth surface is: *holds at least one of `URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET` or `URSA_OSCAR_MCP_BEARER_TOKEN`*. Appropriate for a single-user homelab system.
+The effective auth surface is: *holds at least one of `URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET`, `URSA_OSCAR_MCP_BEARER_TOKEN`, or an operator JWT generated via the web UI*. All three resolve to the same operator identity (`operator`) in this single-user system — appropriate for a homelab.
 
 If URSA-OSCAR ever goes multi-tenant (commercial offering, friends-sharing-one-instance), this model needs replacement — see APEX's `docs/17-oauth-setup.md` for the same caveat. Single-deploy-per-user homelab installs reuse this same setup procedure.
 

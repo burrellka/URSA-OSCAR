@@ -25,7 +25,7 @@ from ursa_oscar.storage.db import DuckDBManager
 from ursa_oscar.storage.migrations import apply_migrations
 from ursa_oscar.storage.repositories import nights as nights_repo
 from ursa_oscar.storage.repositories import sessions as sessions_repo
-from tests.conftest import FIXTURE_DATES, FIXTURE_ROOT
+from tests.conftest import FIXTURE_DATES, FIXTURE_ROOT, bypass_auth
 
 
 @pytest.fixture
@@ -47,6 +47,7 @@ def seeded_client(tmp_path, monkeypatch):
     seeder.close()
 
     app = create_app()
+    bypass_auth(app)  # Phase 6.4
     with TestClient(app) as client:
         yield client
     _config_mod._settings = None

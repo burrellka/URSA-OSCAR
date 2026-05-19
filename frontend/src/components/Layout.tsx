@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import {
   Calendar,
   Activity,
@@ -11,8 +11,11 @@ import {
   FileText,
   User,
   Settings as SettingsIcon,
+  LogOut,
+  KeyRound,
   type LucideIcon,
 } from 'lucide-react';
+import type { AuthSessionResponse } from '../api/client';
 
 const NAV: Array<{ to: string; label: string; Icon: LucideIcon; end?: boolean }> = [
   { to: '/', label: 'Overview', Icon: Calendar, end: true },
@@ -31,7 +34,19 @@ const NAV: Array<{ to: string; label: string; Icon: LucideIcon; end?: boolean }>
   { to: '/settings', label: 'Settings', Icon: SettingsIcon },
 ];
 
-export default function Layout() {
+interface LayoutProps {
+  session: AuthSessionResponse | null;
+  onSignOut: () => Promise<void> | void;
+}
+
+export default function Layout({ session, onSignOut }: LayoutProps) {
+  const navigate = useNavigate();
+
+  async function handleSignOut() {
+    await onSignOut();
+    navigate('/login', { replace: true });
+  }
+
   return (
     <div className="app-container">
       <nav className="sidebar">
@@ -65,6 +80,54 @@ export default function Layout() {
             </NavLink>
           ))}
         </div>
+
+        {/* Phase 6.4 — operator | sign-out footer. Anchored to the
+            bottom of the sidebar so it doesn't conflict with the
+            scrolling nav links. */}
+        {session && (
+          <div
+            style={{
+              marginTop: 'auto',
+              paddingTop: '0.75rem',
+              borderTop: '1px solid var(--border-color)',
+              fontSize: '0.8125rem',
+              color: 'var(--text-secondary)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.5rem',
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => navigate('/settings/account')}
+              title="Account settings"
+              style={{
+                background: 'none',
+                border: 'none',
+                padding: '0.25rem 0.375rem',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                color: 'var(--text-primary)',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.375rem',
+                flex: 1,
+              }}
+            >
+              <KeyRound size={14} />
+              <span>{session.user}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              title="Sign out"
+              className="icon-btn"
+              style={{ padding: '0.25rem 0.375rem' }}
+            >
+              <LogOut size={14} />
+            </button>
+          </div>
+        )}
       </nav>
 
       <main className="main-content">

@@ -875,6 +875,7 @@ All configuration is environment-variable-driven. Settings are read once at star
 | `URSA_OSCAR_MCP_OAUTH_CLIENT_ID` | (set by operator) | Mirrored from MCP env |
 | `URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET` | (set by operator) | Mirrored from MCP env |
 | `URSA_OSCAR_SECRET_KEY` | (auto-generated on first start) | **Phase 5** — Fernet master key for `/data/secrets.enc`. If unset, generated to `/data/secret_key.gen`; operator copies into compose env and deletes file. |
+| `URSA_OSCAR_JWT_SECRET` | (auto-generated on first start at `/data/jwt_secret`) | **Phase 6.4** — HS256 signing secret for operator JWTs. If unset, auto-generated to `/data/jwt_secret` (mode 0600) on first boot. Persisted across restarts. Same secret must be visible to the MCP container. |
 | `URSA_OSCAR_*_IMAGE_VERSION` | `latest` | Per-container image version, surfaced on Settings page |
 
 ### MCP container (`ursa-oscar-mcp`)
@@ -886,6 +887,8 @@ All configuration is environment-variable-driven. Settings are read once at star
 | `URSA_OSCAR_MCP_BASE_URL` | (set by operator) | Public URL — used in OAuth metadata response |
 | `URSA_OSCAR_MCP_OAUTH_CLIENT_ID` | (set by operator) | OAuth client ID (set in Claude.ai connector config too) |
 | `URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET` | (set by operator) | OAuth client secret |
+| `URSA_OSCAR_JWT_SECRET` | (falls back to `/data/jwt_secret` from shared volume) | **Phase 6.4** — same secret as the API container, used to verify operator JWTs as a third bearer kind on `/sse` (in addition to OAuth + static bearer). When unset, MCP reads `/data/jwt_secret` from its read-only `/data` mount. |
+| `URSA_OSCAR_MCP_API_TOKEN` | (set by operator via web UI) | **Phase 6.4** — 90-day JWT the MCP container attaches to its OUTGOING backend calls. Required when paired with API ≥ 0.13.0; generated via the URSA-OSCAR web UI Settings → Account → Generate API Token. |
 
 ### Watcher container (`ursa-oscar-watcher`)
 
@@ -899,6 +902,7 @@ All configuration is environment-variable-driven. Settings are read once at star
 | `URSA_OSCAR_FORCE_REIMPORT` | `false` | When true, every auto-import passes `?force=true` |
 | `URSA_OSCAR_JOB_WAIT_TIMEOUT` | `600` (seconds) | Release tracker if a job hangs |
 | `URSA_OSCAR_LOG_LEVEL` | `INFO` | Python logging level |
+| `URSA_OSCAR_WATCHER_TOKEN` | (set by operator via web UI) | **Phase 6.4** — 90-day JWT attached as `Authorization: Bearer <token>` on every API call. Required when paired with API ≥ 0.13.0; generated via the URSA-OSCAR web UI Settings → Account → Generate API Token. NOT forwarded to webhook URLs (external endpoints don't see the internal credential). |
 
 ### Web container (`ursa-oscar-web`)
 

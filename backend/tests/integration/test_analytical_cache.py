@@ -21,6 +21,7 @@ import pytest
 from ursa_oscar.analytics.cache import AnalyticalCache, cached_compute
 from ursa_oscar.storage.db import DuckDBManager
 from ursa_oscar.storage.migrations import apply_migrations
+from tests.conftest import bypass_auth
 
 
 @pytest.fixture
@@ -299,6 +300,7 @@ def test_cache_stats_endpoint(tmp_path, monkeypatch):
     seeder.close()
 
     app = create_app()
+    bypass_auth(app)  # Phase 6.4
     with TestClient(app) as client:
         # Seed a couple of entries via the cache directly.
         cache = AnalyticalCache(client.app.state.db)

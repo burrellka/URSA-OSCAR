@@ -11,7 +11,7 @@ from ursa_oscar.ingestion.importer import import_path
 from ursa_oscar.main import create_app
 from ursa_oscar.storage.db import DuckDBManager
 from ursa_oscar.storage.migrations import apply_migrations
-from tests.conftest import FIXTURE_ROOT
+from tests.conftest import FIXTURE_ROOT, bypass_auth
 
 
 @pytest.fixture
@@ -35,6 +35,7 @@ def api_client(tmp_path, monkeypatch):
     seeder.close()
 
     app = create_app()
+    bypass_auth(app)  # Phase 6.4 — skip require_auth for existing endpoint tests
     with TestClient(app) as client:
         yield client
 

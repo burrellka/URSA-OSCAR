@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ursa-oscar-watcher"
-version = "0.9.0"
-description = "URSA-OSCAR file-watcher daemon — Phase 4 Ticket 3."
+version = "0.10.1"
+description = "URSA-OSCAR file-watcher daemon — Phase 4 Ticket 3 / Phase 6.4 auth."
 requires-python = ">=3.11"
 dependencies = [
     # We poll via os.scandir rather than fsevents — bind-mounts over

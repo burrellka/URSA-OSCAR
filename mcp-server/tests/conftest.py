@@ -113,6 +113,19 @@ def api_server():
     from ursa_oscar.main import create_app
 
     app = create_app()
+
+    # Phase 6.4 — the API now requires auth on every endpoint. The MCP
+    # tool tests don't exercise auth (they test tool logic against a
+    # live backend), so we bypass via FastAPI dependency_overrides.
+    # The auth provider's own tests live in test_auth_provider.py and
+    # do NOT use this fixture.
+    from ursa_oscar.auth import require_auth
+
+    def _fake_claims() -> dict:
+        return {"sub": "operator", "kind": "session", "iat": 0, "exp": 9_999_999_999}
+
+    app.dependency_overrides[require_auth] = _fake_claims
+
     config = uvicorn.Config(
         app,
         host="127.0.0.1",

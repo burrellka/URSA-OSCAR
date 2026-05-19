@@ -51,7 +51,9 @@ class Watcher:
         clock=time.monotonic,
     ) -> None:
         self.config = config
-        self.api = api or ApiClient(config.api_url)
+        # Phase 6.4 — pass the operator JWT through to the API client
+        # so its outgoing requests carry the bearer header.
+        self.api = api or ApiClient(config.api_url, api_token=config.api_token)
         self._clock = clock
         # State.
         self._stop = False

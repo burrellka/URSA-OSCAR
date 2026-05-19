@@ -121,6 +121,10 @@ def make_watcher(
         webhook_url=webhook_url,
         force_reimport=force_reimport,
         job_wait_timeout_seconds=job_wait_timeout_seconds,
+        # Phase 6.4 — the watcher loop tests inject a FakeApi so the
+        # real bearer-attaching ApiClient isn't exercised here; the
+        # token-passing behavior is covered in test_api_client.py.
+        api_token=None,
     )
     return Watcher(config, api=api, clock=clock), api, clock
 

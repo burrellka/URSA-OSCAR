@@ -12,14 +12,15 @@ End-to-end deployment walkthrough for someone who's not the original maintainer 
 4. [Generating secrets](#4-generating-secrets)
 5. [Initial deployment](#5-initial-deployment)
 6. [First-start operator action (master key)](#6-first-start-operator-action-master-key)
-7. [Connecting your AI provider(s)](#7-connecting-your-ai-providers)
-8. [Optional — Claude.ai MCP connector](#8-optional--claudeai-mcp-connector)
-9. [Optional — file-watcher webhook](#9-optional--file-watcher-webhook)
-10. [Importing your first SD card](#10-importing-your-first-sd-card)
-11. [Backup strategy](#11-backup-strategy)
-12. [Version management](#12-version-management)
-13. [Upgrade procedure](#13-upgrade-procedure)
-14. [Operator FAQ](#14-operator-faq)
+7. [First-run authentication setup](#7-first-run-authentication-setup) *(Phase 6.4+, required)*
+8. [Connecting your AI provider(s)](#8-connecting-your-ai-providers)
+9. [Optional — Claude.ai MCP connector](#9-optional--claudeai-mcp-connector)
+10. [Optional — file-watcher webhook](#10-optional--file-watcher-webhook)
+11. [Importing your first SD card](#11-importing-your-first-sd-card)
+12. [Backup strategy](#12-backup-strategy)
+13. [Version management](#13-version-management)
+14. [Upgrade procedure](#14-upgrade-procedure)
+15. [Operator FAQ](#15-operator-faq)
 
 ---
 
@@ -257,7 +258,89 @@ From now on, the API uses the persisted key from env on every boot. The encrypte
 
 ---
 
-## 7. Connecting your AI provider(s)
+## 7. First-run authentication setup
+
+*Phase 6.4.1+ (API ≥ 0.13.1, MCP ≥ 0.11.1, watcher ≥ 0.10.1). Every API endpoint requires authentication. Service-to-service tokens are auto-managed — operator only picks a password and that's it.*
+
+### 7a. Choose the operator password
+
+Open the web UI at `http://<host>:5063`. On the very first visit you land on **`/setup`** — the URSA-OSCAR brand page asks you to choose an operator password.
+
+Rules:
+
+- Minimum 12 characters
+- No complexity requirements beyond length
+- **No recovery.** If you forget it, the only way back in is to SSH to the host and delete `/data/auth.json` to re-bootstrap. Store the password in your password manager.
+
+Click **Create operator account**. The page redirects to the Overview.
+
+That's it. No copy-paste, no compose-env edits. The API container has already minted service tokens for MCP and watcher at `/data/service_tokens/mcp.jwt` and `/data/service_tokens/watcher.jwt` on its first boot; the MCP and watcher containers read those files at request time. As tokens approach expiration (90 days), the API auto-re-mints them on its next startup.
+
+### 7b. Verify the auto-managed flow
+
+```bash
+ls -la /opt/ursa-oscar/data/service_tokens/
+# -rw------- mcp.jwt
+# -rw------- watcher.jwt
+
+docker logs ursa-oscar-api 2>&1 | grep "service token"
+# service token mcp: minted fresh (reason=missing); valid until ...
+# service token watcher: minted fresh (reason=missing); valid until ...
+
+docker logs ursa-oscar-watcher 2>&1 | tail -3
+# api_client: operator JWT configured; auth header active
+
+docker logs ursa-oscar-mcp 2>&1 | grep "JWT signing secret"
+# JWT signing secret loaded from /data/jwt_secret (shared with API)
+```
+
+### 7c. Optional — generate an operator API token
+
+The **Settings → Account → Generate new API token** flow still exists, but it's no longer required for MCP / watcher to function. Use it when you want a JWT for:
+
+- A curl or `gh` script that calls the API outside the browser
+- A third-party automation that needs to call MCP tools directly without OAuth
+- An operator desktop tool you're building
+
+The generated token is the same 90-day JWT format as the service tokens; just one you control manually.
+
+### 7d. Optional — pin service credentials manually
+
+If you want to manage the MCP and watcher tokens yourself (e.g., for stricter audit, separate rotation cadence, or running a per-team token):
+
+```yaml
+ursa-oscar-mcp:
+  environment:
+    URSA_OSCAR_MCP_API_TOKEN: <your manually-generated JWT>
+
+ursa-oscar-watcher:
+  environment:
+    URSA_OSCAR_WATCHER_TOKEN: <your manually-generated JWT>
+```
+
+When either env var is set, the container uses it instead of the auto-managed file. Leaves the auto-file in place but ignored — set it back to empty/null to re-engage the file fallback.
+
+### 7e. JWT secret rotation (optional)
+
+By default, the API container auto-generates a per-instance JWT signing secret at `/data/jwt_secret` (mode 0600) on first boot. The MCP container reads the same file from its read-only `/data` mount. **No operator action is required** — the secret is fully self-managing.
+
+To rotate (invalidates ALL outstanding JWTs, forces re-login + service-token re-mint):
+
+```bash
+rm /opt/ursa-oscar/data/jwt_secret /opt/ursa-oscar/data/service_tokens/*.jwt
+docker compose up -d --force-recreate
+# Sign in fresh; service tokens re-mint automatically.
+```
+
+To bring the JWT secret under your own management instead of the auto-file, set `URSA_OSCAR_JWT_SECRET` in compose env (must be the same value on both `ursa-oscar-api` and `ursa-oscar-mcp`):
+
+```bash
+python3 -c "import secrets; print(secrets.token_hex(32))"
+```
+
+---
+
+## 8. Connecting your AI provider(s)
 
 URSA-OSCAR ships seven provider presets. You can configure any one of them (or several over time and swap between them).
 
@@ -329,7 +412,7 @@ If the tool chip appears but with `INVALID_ARGUMENT` or similar error, the model
 
 ---
 
-## 8. Optional — Claude.ai MCP connector
+## 9. Optional — Claude.ai MCP connector
 
 URSA-OSCAR also exposes its tools via an MCP server for use directly inside the Claude.ai web app or API (not the in-app chat — the in-app chat is the AI proxy from §7). This lets you set up "URSA" as a Project in Claude.ai with the MCP connector, and Claude has access to your CPAP data + analytical tools in any conversation.
 
@@ -344,7 +427,7 @@ The two AI paths (in-app chat from §7, Claude.ai connector here) are **independ
 
 ---
 
-## 9. Optional — file-watcher webhook
+## 10. Optional — file-watcher webhook
 
 Phase 4 added a watcher daemon that auto-imports new SD-card data. You can wire its completion event to any webhook receiver — ntfy, Slack, Home Assistant, Discord, custom service, anything that accepts a POST.
 
@@ -382,7 +465,7 @@ The webhook fires AFTER the import completes server-side. If the import failed, 
 
 ---
 
-## 10. Importing your first SD card
+## 11. Importing your first SD card
 
 URSA-OSCAR has three import paths. Pick whichever fits your workflow.
 
@@ -423,7 +506,7 @@ Default behavior: nights already in the DB are skipped (fast, cheap). To re-pars
 
 ---
 
-## 11. Backup strategy
+## 12. Backup strategy
 
 ### What to back up
 
@@ -465,7 +548,7 @@ For TrueNAS users: ZFS snapshots on the dataset are even better — atomic + spa
 
 ---
 
-## 12. Version management
+## 13. Version management
 
 URSA-OSCAR follows a **strict version pinning policy** as of Phase 5.5. Every container in your stack pins to an explicit `X.Y.Z` image tag — never `:latest`. The Settings page version chips read the same env vars that drive the tag, so the chip you see always matches what's actually running. No drift between cosmetic and deployed.
 
@@ -509,7 +592,7 @@ services:
 
 A useful sanity check: the version chips on `/settings` should display the same numbers as your `image:` tags. If they don't match, you've drifted.
 
-## 13. Upgrade procedure
+## 14. Upgrade procedure
 
 When new image versions ship:
 
@@ -548,7 +631,7 @@ If an upgrade breaks something:
 
 ---
 
-## 14. Operator FAQ
+## 15. Operator FAQ
 
 ### Q: My SD card has YYYY-MM-DD dates that don't look like real times.
 

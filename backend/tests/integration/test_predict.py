@@ -34,6 +34,7 @@ from ursa_oscar.analytics.predict import analyze_prediction
 from ursa_oscar.main import create_app
 from ursa_oscar.storage.db import DuckDBManager
 from ursa_oscar.storage.migrations import apply_migrations
+from tests.conftest import bypass_auth
 
 
 # ----------------------------------------------------------------------
@@ -342,6 +343,7 @@ def api_client(tmp_path, monkeypatch):
     seeder.close()
 
     app = create_app()
+    bypass_auth(app)  # Phase 6.4
     with TestClient(app) as client:
         yield client
     _config_mod._settings = None
