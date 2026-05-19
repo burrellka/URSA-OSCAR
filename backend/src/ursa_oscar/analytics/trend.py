@@ -15,6 +15,7 @@ from scipy import stats
 
 from ..storage.db import DuckDBManager
 from .metric_resolver import resolve_metric
+from .projections import SafeProjection, safe_projection
 from .usage_rate import compute_usage_breakdown
 
 # Metrics where "lower is better" — same set as compare_periods.
@@ -76,13 +77,25 @@ def compute_trend(
 
     last_day_index = days_since_start[-1]
     current_estimate = float(intercept + slope * last_day_index)
-    proj_day_index = last_day_index + projection_days
-    projection_value = float(intercept + slope * proj_day_index)
     projection_date = (series.index[-1] + timedelta(days=projection_days)).isoformat()
+
+    # 0.13.5 — replace raw linear extrapolation with safe_projection,
+    # which applies a 25% sample-size rule and physical-bounds clamps
+    # per metric. Eliminates the "Projected in 30 days: -23.72 AHI"
+    # class of clinically nonsensical output the operator saw in PDF
+    # review.
+    proj = safe_projection(
+        metric=metric,
+        slope=slope,
+        intercept=intercept,
+        last_x=float(last_day_index),
+        projection_days=projection_days,
+        n_samples=n,
+    )
 
     interpretation, text = _interpret_trend(
         metric, slope, r_squared, p_value, n,
-        current_estimate, projection_value, projection_days,
+        current_estimate, proj, projection_days,
     )
 
     return {
@@ -98,7 +111,15 @@ def compute_trend(
         "projection": {
             "projection_days": projection_days,
             "projection_date": projection_date,
-            "projected_value": projection_value,
+            "projected_value": proj.projected_value,
+            # 0.13.5 — new diagnostic fields so the UI / PDF can show
+            # WHY a projection was suppressed or clamped without the
+            # caller having to re-derive it.
+            "raw_projected_value": proj.raw_projected_value,
+            "clamped": proj.clamped,
+            "bounds_used": list(proj.bounds_used) if proj.bounds_used else None,
+            "suppressed_reason": proj.suppressed_reason,
+            "explanation": proj.explanation,
         },
         "interpretation": interpretation,
         "interpretation_text": text,
@@ -112,7 +133,7 @@ def _interpret_trend(
     p_value: float,
     n: int,
     current_estimate: float,
-    projection_value: float,
+    projection: "SafeProjection",
     projection_days: int,
 ) -> tuple[str, str]:
     if r_squared < 0.1:
@@ -130,11 +151,39 @@ def _interpret_trend(
     )
     descriptor = "improving" if good else "worsening" if metric in _LOWER_IS_BETTER or metric in {"total_time_minutes", "session_count"} else "changing"
 
+    # 0.13.5 — projection text now reflects the safe_projection guards.
+    # Three cases:
+    #   1. Projection was suppressed (insufficient samples) → say so
+    #   2. Projection was clamped (raw value outside physical bounds)
+    #      → show the clamped value with a note
+    #   3. Projection passed through → show the value as before
+    if projection.projected_value is None:
+        proj_text = (
+            f"Projection in {projection_days} days suppressed: "
+            f"{projection.explanation or projection.suppressed_reason}"
+        )
+    elif projection.clamped:
+        bound_label = (
+            "lower" if projection.suppressed_reason == "clamped_to_lower_bound"
+            else "upper"
+        )
+        proj_text = (
+            f"Projected in {projection_days} days: "
+            f"{projection.projected_value:.2f} "
+            f"(clamped to {bound_label} physical bound; raw extrapolation "
+            f"was {projection.raw_projected_value:.2f})."
+        )
+    else:
+        proj_text = (
+            f"Projected in {projection_days} days: "
+            f"{projection.projected_value:.2f}."
+        )
+
     text = (
         f"{metric} is trending {direction} at {slope:+.4f}/day "
         f"(R²={r_squared:.2f}, p={p_value:.3f}, n={n}). "
         f"Current estimated value: {current_estimate:.2f}. "
-        f"Projected in {projection_days} days: {projection_value:.2f}."
+        f"{proj_text}"
     )
     if descriptor != "changing":
         text += f" Direction: {descriptor}."

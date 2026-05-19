@@ -242,6 +242,36 @@ def test_trend_response_includes_usage_breakdown(api_client):
     assert body["usage_rate_pct"] == 41.7
 
 
+def test_trend_endpoint_projection_includes_safe_fields(api_client):
+    """0.13.5 — the /trend response now includes raw_projected_value,
+    clamped, suppressed_reason, etc. so the UI can render WHY a
+    projection was suppressed without re-deriving it."""
+    r = api_client.get(
+        "/api/v1/analytics/trend",
+        params={
+            "metric": "total_ahi",
+            "start_date": "2026-05-07",
+            "end_date": "2026-05-12",
+        },
+    )
+    body = r.json()
+    # The 5-night fixture passes the existing n>=5 threshold, but 30-
+    # day projection requires int(30 * 0.25)=7 samples per safe_projection.
+    # So the projection block exists but projected_value is suppressed.
+    proj = body["projection"]
+    assert proj is not None
+    assert "projected_value" in proj
+    assert "raw_projected_value" in proj
+    assert "clamped" in proj
+    assert "suppressed_reason" in proj
+    assert "explanation" in proj
+    assert proj["projected_value"] is None
+    assert proj["suppressed_reason"] == "insufficient_samples"
+    # raw value is still computed even though final is None — useful
+    # for "what would have been projected" diagnostics.
+    assert isinstance(proj["raw_projected_value"], (int, float))
+
+
 def test_usage_breakdown_handles_inverted_range(api_client):
     """Defensive: if start > end (shouldn't happen via API validation
     but the helper still has to be safe), all fields go to zero. Uses
