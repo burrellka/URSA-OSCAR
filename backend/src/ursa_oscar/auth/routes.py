@@ -75,8 +75,29 @@ class TokenResponse(BaseModel):
     expires_at_iso: str
 
 
+class ConnectionDiagnostic(BaseModel):
+    """0.13.3 — Operator-visible diagnostic of how the API is detecting
+    the client's connection scheme. Surfaced on the /login and /setup
+    pages so misconfigured reverse proxies get a visible warning
+    instead of a silent security degradation."""
+    # True when the operator's browser is on HTTPS (regardless of how
+    # the API container itself received the request).
+    detected_https: bool
+    # Which signal the API used: "url" (direct HTTPS to container),
+    # "x-forwarded-proto" (proxy did it right), "origin" or "referer"
+    # (proxy is misconfigured but the browser told us via these
+    # headers), or "none" (plain HTTP).
+    detection_source: str
+    # Non-null when there's an actionable misconfiguration. Frontend
+    # renders this as a banner on the /login and /setup pages.
+    warning: str | None = None
+
+
 class BootstrapStatusResponse(BaseModel):
     bootstrapped: bool
+    # 0.13.3 — auto-detected scheme diagnostic. Optional in the wire
+    # format so older frontends keep working.
+    connection: ConnectionDiagnostic | None = None
 
 
 class SessionResponse(BaseModel):
@@ -105,14 +126,90 @@ def _client_ip(request: Request) -> str:
     return "unknown"
 
 
-def _set_session_cookie(response: Response, token: str) -> None:
+def _detect_scheme(request: Request) -> tuple[bool, str]:
+    """0.13.3 — Determine whether the operator's browser is on HTTPS,
+    independent of the internal hop reaching this container.
+
+    Returns ``(is_https, detection_source)``. The source string is
+    surfaced in the connection diagnostic so the frontend can decide
+    whether to render a misconfiguration warning.
+
+    Precedence:
+
+      1. ``request.url.scheme == 'https'`` — direct HTTPS to the API.
+      2. ``X-Forwarded-Proto: https`` — proxy did its job; canonical
+         signal from a properly-configured reverse proxy.
+      3. ``Origin: https://...`` — browser sets Origin on POST/PUT/
+         DELETE. Reliable on the actual login/bootstrap submit.
+      4. ``Referer: https://...`` — set on most GETs including the
+         bootstrap-status probe from the /login page.
+      5. Otherwise → plain HTTP.
+
+    The Origin/Referer fallback (sources 3 and 4) means the cookie
+    Secure flag gets set correctly even when an operator has a TLS-
+    terminating reverse proxy that doesn't forward X-Forwarded-Proto.
+    The browser will receive a Secure cookie and send it back over the
+    HTTPS connection it's actually using; the API container's internal
+    HTTP hop is invisible to the cookie's transport check.
+    """
+    if request.url.scheme == "https":
+        return True, "url"
+    if (request.headers.get("x-forwarded-proto") or "").lower() == "https":
+        return True, "x-forwarded-proto"
+    origin = (request.headers.get("origin") or "").lower()
+    if origin.startswith("https://"):
+        return True, "origin"
+    referer = (request.headers.get("referer") or "").lower()
+    if referer.startswith("https://"):
+        return True, "referer"
+    return False, "none"
+
+
+def _connection_diagnostic(request: Request) -> ConnectionDiagnostic:
+    """Build the diagnostic the frontend renders on /login + /setup."""
+    is_https, source = _detect_scheme(request)
+    warning: str | None = None
+    if is_https and source in ("origin", "referer"):
+        warning = (
+            "Your browser is accessing URSA-OSCAR over HTTPS, but the request "
+            "reaching the API container is plain HTTP and your reverse proxy "
+            f"isn't sending an X-Forwarded-Proto header. The {source} header "
+            "is being used as a fallback so cookies still get the Secure flag, "
+            "but please add 'X-Forwarded-Proto: https' (or equivalent) to your "
+            "reverse-proxy config — it's the canonical signal and avoids relying "
+            "on a fallback that some browsers can strip."
+        )
+    return ConnectionDiagnostic(
+        detected_https=is_https,
+        detection_source=source,
+        warning=warning,
+    )
+
+
+def _set_session_cookie(request: Request, response: Response, token: str) -> None:
+    """Set the session cookie with scheme-aware ``Secure`` flag.
+
+    0.13.2 introduced scheme awareness (X-Forwarded-Proto + url.scheme).
+    0.13.3 added Origin/Referer fallback so the Secure flag still
+    engages when a reverse proxy is misconfigured — the browser is the
+    actual gate on the Secure flag's interpretation, so once we know
+    the operator is on HTTPS we can set Secure regardless of what the
+    internal hop looks like.
+
+    URSA_OSCAR_DEV_MODE=true forces ``secure=False, samesite=lax``
+    regardless of detection. Use it for local development.
+    """
     dev_mode = os.environ.get("URSA_OSCAR_DEV_MODE", "false").lower() == "true"
+    if dev_mode:
+        is_https = False
+    else:
+        is_https, _source = _detect_scheme(request)
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=not dev_mode,
-        samesite="lax" if dev_mode else "strict",
+        secure=is_https,
+        samesite="strict" if is_https else "lax",
         max_age=int(SESSION_LIFETIME.total_seconds()),
         path="/",
     )
@@ -138,9 +235,17 @@ def _state(request: Request):
 def bootstrap_status(request: Request) -> BootstrapStatusResponse:
     """Drives the first-run UI. Returns ``bootstrapped: false`` when
     /data/auth.json doesn't exist yet — the web UI then renders the
-    /setup page instead of /login."""
+    /setup page instead of /login.
+
+    0.13.3 — also returns a connection diagnostic the frontend renders
+    as a warning banner when the operator's reverse proxy is mis-
+    configured (HTTPS at the browser but no X-Forwarded-Proto header
+    reaching the API)."""
     store = _state(request).auth_store
-    return BootstrapStatusResponse(bootstrapped=store.is_bootstrapped())
+    return BootstrapStatusResponse(
+        bootstrapped=store.is_bootstrapped(),
+        connection=_connection_diagnostic(request),
+    )
 
 
 @router.post("/bootstrap")
@@ -174,7 +279,7 @@ def bootstrap(
     secret = _state(request).jwt_secret
     now = datetime.now(timezone.utc)
     token = encode_token(secret, kind="session", now=now)
-    _set_session_cookie(response, token)
+    _set_session_cookie(request, response, token)
     logger.info("auth: bootstrap completed; operator session issued")
     return TokenResponse(
         token=token,
@@ -227,7 +332,7 @@ def login(
     secret = _state(request).jwt_secret
     now = datetime.now(timezone.utc)
     token = encode_token(secret, kind="session", now=now)
-    _set_session_cookie(response, token)
+    _set_session_cookie(request, response, token)
     logger.info("auth: login successful for operator (ip=%s)", ip)
     return TokenResponse(
         token=token,
@@ -302,7 +407,7 @@ def change_password(
     secret = _state(request).jwt_secret
     now = datetime.now(timezone.utc)
     token = encode_token(secret, kind="session", now=now)
-    _set_session_cookie(response, token)
+    _set_session_cookie(request, response, token)
     logger.info("auth: password changed for operator")
     return TokenResponse(
         token=token,

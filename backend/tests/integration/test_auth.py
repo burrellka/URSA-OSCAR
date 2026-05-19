@@ -267,7 +267,11 @@ def auth_client(tmp_path, monkeypatch):
 def test_bootstrap_status_returns_false_initially(auth_client):
     r = auth_client.get("/api/v1/auth/bootstrap-status")
     assert r.status_code == 200
-    assert r.json() == {"bootstrapped": False}
+    body = r.json()
+    assert body["bootstrapped"] is False
+    # 0.13.3 — connection diagnostic always returned (may be null
+    # warning when proxy is happy or scheme is plain HTTP).
+    assert "connection" in body
 
 
 def test_bootstrap_flow_end_to_end(auth_client):
@@ -283,7 +287,7 @@ def test_bootstrap_flow_end_to_end(auth_client):
 
     # Subsequent status call shows bootstrapped.
     r2 = auth_client.get("/api/v1/auth/bootstrap-status")
-    assert r2.json() == {"bootstrapped": True}
+    assert r2.json()["bootstrapped"] is True
 
 
 def test_bootstrap_rejected_once_set(auth_client):
@@ -408,3 +412,243 @@ def test_logout_clears_cookie(auth_client):
     assert r.status_code == 200
     assert COOKIE_NAME not in auth_client.cookies
 
+
+# ---------------------------------------------------------------------------
+# 0.13.2 — Scheme-aware Secure cookie flag.
+#
+# Regression: 0.13.0 + 0.13.1 hard-coded ``secure=True`` in production
+# (anything not URSA_OSCAR_DEV_MODE=true), which locked out operators
+# accessing the stack over plain HTTP on a LAN. These tests pin the
+# new behavior: secure follows the request scheme + X-Forwarded-Proto.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def prod_auth_client(tmp_path, monkeypatch):
+    """Same as auth_client but WITHOUT URSA_OSCAR_DEV_MODE=true, so we
+    exercise the scheme-aware production cookie path."""
+    import ursa_oscar.config as _config_mod
+    db_file = tmp_path / "auth.duckdb"
+    monkeypatch.setenv("URSA_OSCAR_DB_PATH", str(db_file))
+    monkeypatch.setenv("URSA_OSCAR_JWT_SECRET", "deterministic-test-secret-xyz")
+    monkeypatch.delenv("URSA_OSCAR_DEV_MODE", raising=False)
+    _config_mod._settings = None
+    seeder = DuckDBManager(db_file, read_only=False)
+    apply_migrations(seeder)
+    seeder.close()
+    app = create_app()
+    with TestClient(app) as client:
+        yield client
+    _config_mod._settings = None
+
+
+def _set_cookie_header(response) -> str:
+    """Pull the raw Set-Cookie header so we can inspect attribute flags
+    (TestClient.cookies jar strips Secure/HttpOnly/SameSite)."""
+    header = response.headers.get("set-cookie", "")
+    assert COOKIE_NAME in header, f"no session cookie in: {header!r}"
+    return header.lower()
+
+
+def test_http_bootstrap_omits_secure_flag(prod_auth_client):
+    """LAN-over-HTTP smoke: secure=False so the browser will send the
+    cookie back. samesite=lax so top-level navigation works."""
+    r = prod_auth_client.post(
+        "/api/v1/auth/bootstrap",
+        json={"password": "operator-password-1234"},
+    )
+    assert r.status_code == 200, r.text
+    cookie = _set_cookie_header(r)
+    assert "secure" not in cookie
+    assert "samesite=lax" in cookie
+    assert "httponly" in cookie
+
+
+def test_forwarded_proto_https_sets_secure(prod_auth_client):
+    """Behind a TLS-terminating proxy that sets X-Forwarded-Proto."""
+    r = prod_auth_client.post(
+        "/api/v1/auth/bootstrap",
+        json={"password": "operator-password-1234"},
+        headers={"X-Forwarded-Proto": "https"},
+    )
+    assert r.status_code == 200, r.text
+    cookie = _set_cookie_header(r)
+    assert "secure" in cookie
+    assert "samesite=strict" in cookie
+
+
+def test_forwarded_proto_http_does_not_set_secure(prod_auth_client):
+    """A misconfigured proxy that forwards 'http' explicitly should
+    also keep secure=False (matches the request reality)."""
+    r = prod_auth_client.post(
+        "/api/v1/auth/bootstrap",
+        json={"password": "operator-password-1234"},
+        headers={"X-Forwarded-Proto": "http"},
+    )
+    cookie = _set_cookie_header(r)
+    assert "secure" not in cookie
+
+
+def test_dev_mode_forces_loose_cookie_even_with_https_forwarded(tmp_path, monkeypatch):
+    """URSA_OSCAR_DEV_MODE=true is an explicit override — wins even
+    when X-Forwarded-Proto says https. Useful for local debugging."""
+    import ursa_oscar.config as _config_mod
+    db_file = tmp_path / "auth.duckdb"
+    monkeypatch.setenv("URSA_OSCAR_DB_PATH", str(db_file))
+    monkeypatch.setenv("URSA_OSCAR_JWT_SECRET", "deterministic-test-secret-xyz")
+    monkeypatch.setenv("URSA_OSCAR_DEV_MODE", "true")
+    _config_mod._settings = None
+    seeder = DuckDBManager(db_file, read_only=False)
+    apply_migrations(seeder)
+    seeder.close()
+    app = create_app()
+    with TestClient(app) as client:
+        r = client.post(
+            "/api/v1/auth/bootstrap",
+            json={"password": "operator-password-1234"},
+            headers={"X-Forwarded-Proto": "https"},
+        )
+    _config_mod._settings = None
+    cookie = _set_cookie_header(r)
+    assert "secure" not in cookie
+    assert "samesite=lax" in cookie
+
+
+def test_login_over_http_round_trip_works(prod_auth_client):
+    """End-to-end: bootstrap over HTTP, then verify the cookie flows
+    back on a subsequent authenticated request. This is the actual
+    LAN-over-HTTP scenario from the bug report."""
+    r = prod_auth_client.post(
+        "/api/v1/auth/bootstrap",
+        json={"password": "operator-password-1234"},
+    )
+    assert r.status_code == 200
+    # The TestClient's cookie jar respects the SameSite/Secure attrs
+    # as set by Starlette. With our new behavior the cookie has no
+    # Secure flag over HTTP, so it should be available and sent back.
+    assert COOKIE_NAME in prod_auth_client.cookies
+    r2 = prod_auth_client.get("/api/v1/auth/session")
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["user"] == "operator"
+
+
+# ---------------------------------------------------------------------------
+# 0.13.3 — Origin/Referer fallback for misconfigured reverse proxies +
+# connection diagnostic surfaced via bootstrap-status.
+#
+# Real-world failure mode this covers: operator runs URSA-OSCAR behind
+# Cloudflare tunnel or nginx that terminates TLS but doesn't add
+# X-Forwarded-Proto. Without 0.13.3, the cookie would lose its Secure
+# flag (silent security degradation). With 0.13.3, the API detects the
+# HTTPS connection via Origin/Referer, sets Secure correctly, AND
+# surfaces a warning on /login so the operator can fix their proxy.
+# ---------------------------------------------------------------------------
+
+
+def test_origin_https_engages_secure_cookie(prod_auth_client):
+    """Browser POSTs with Origin: https://... → Secure cookie even
+    though the internal hop is HTTP and X-Forwarded-Proto is missing."""
+    r = prod_auth_client.post(
+        "/api/v1/auth/bootstrap",
+        json={"password": "operator-password-1234"},
+        headers={"Origin": "https://ursa-oscar.example.com"},
+    )
+    assert r.status_code == 200, r.text
+    cookie = _set_cookie_header(r)
+    assert "secure" in cookie
+    assert "samesite=strict" in cookie
+
+
+def test_referer_https_engages_secure_cookie(prod_auth_client):
+    """When Origin isn't sent (e.g., some GET fallbacks), Referer
+    suffices to detect HTTPS."""
+    r = prod_auth_client.post(
+        "/api/v1/auth/bootstrap",
+        json={"password": "operator-password-1234"},
+        headers={"Referer": "https://ursa-oscar.example.com/setup"},
+    )
+    cookie = _set_cookie_header(r)
+    assert "secure" in cookie
+
+
+def test_origin_http_does_not_engage_secure(prod_auth_client):
+    """Origin reflects the actual page scheme — http → no Secure."""
+    r = prod_auth_client.post(
+        "/api/v1/auth/bootstrap",
+        json={"password": "operator-password-1234"},
+        headers={"Origin": "http://192.168.13.5:5063"},
+    )
+    cookie = _set_cookie_header(r)
+    assert "secure" not in cookie
+
+
+def test_bootstrap_status_diagnostic_pure_http(prod_auth_client):
+    """LAN-over-HTTP: no warning, detection_source='none'."""
+    r = prod_auth_client.get("/api/v1/auth/bootstrap-status")
+    assert r.status_code == 200
+    body = r.json()
+    conn = body["connection"]
+    assert conn["detected_https"] is False
+    assert conn["detection_source"] == "none"
+    assert conn["warning"] is None
+
+
+def test_bootstrap_status_diagnostic_with_forwarded_proto(prod_auth_client):
+    """Well-configured proxy: detected_https=True via X-Forwarded-Proto,
+    no warning."""
+    r = prod_auth_client.get(
+        "/api/v1/auth/bootstrap-status",
+        headers={"X-Forwarded-Proto": "https"},
+    )
+    body = r.json()
+    conn = body["connection"]
+    assert conn["detected_https"] is True
+    assert conn["detection_source"] == "x-forwarded-proto"
+    assert conn["warning"] is None
+
+
+def test_bootstrap_status_diagnostic_with_origin_fallback(prod_auth_client):
+    """Misconfigured proxy: HTTPS at the browser but no
+    X-Forwarded-Proto. detection_source='origin', warning is present
+    and mentions X-Forwarded-Proto."""
+    r = prod_auth_client.get(
+        "/api/v1/auth/bootstrap-status",
+        headers={"Origin": "https://ursa-oscar.example.com"},
+    )
+    body = r.json()
+    conn = body["connection"]
+    assert conn["detected_https"] is True
+    assert conn["detection_source"] == "origin"
+    assert conn["warning"] is not None
+    assert "X-Forwarded-Proto" in conn["warning"]
+
+
+def test_bootstrap_status_diagnostic_with_referer_fallback(prod_auth_client):
+    """Same as Origin fallback but via Referer (some browsers don't
+    send Origin on same-origin GETs)."""
+    r = prod_auth_client.get(
+        "/api/v1/auth/bootstrap-status",
+        headers={"Referer": "https://ursa-oscar.example.com/login"},
+    )
+    body = r.json()
+    conn = body["connection"]
+    assert conn["detected_https"] is True
+    assert conn["detection_source"] == "referer"
+    assert conn["warning"] is not None
+
+
+def test_bootstrap_status_diagnostic_forwarded_proto_overrides_origin(prod_auth_client):
+    """When both X-Forwarded-Proto and Origin are present, the proxy
+    header wins — it's the canonical signal and we don't want to flag
+    a warning that's actually a false positive."""
+    r = prod_auth_client.get(
+        "/api/v1/auth/bootstrap-status",
+        headers={
+            "X-Forwarded-Proto": "https",
+            "Origin": "https://ursa-oscar.example.com",
+        },
+    )
+    body = r.json()
+    conn = body["connection"]
+    assert conn["detection_source"] == "x-forwarded-proto"
+    assert conn["warning"] is None

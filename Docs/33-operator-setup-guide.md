@@ -260,7 +260,7 @@ From now on, the API uses the persisted key from env on every boot. The encrypte
 
 ## 7. First-run authentication setup
 
-*Phase 6.4.1+ (API ≥ 0.13.1, MCP ≥ 0.11.1, watcher ≥ 0.10.1). Every API endpoint requires authentication. Service-to-service tokens are auto-managed — operator only picks a password and that's it.*
+*Phase 6.4.1+ (API ≥ 0.13.2, MCP ≥ 0.11.1, watcher ≥ 0.10.1). Every API endpoint requires authentication. Service-to-service tokens are auto-managed — operator only picks a password and that's it. The 0.13.2 API patch makes the session cookie scheme-aware so LAN-over-HTTP access works without needing `URSA_OSCAR_DEV_MODE`.*
 
 ### 7a. Choose the operator password
 

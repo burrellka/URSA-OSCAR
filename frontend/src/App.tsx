@@ -45,14 +45,20 @@ export default function App() {
 
       {auth.status === 'unbootstrapped' && (
         <Routes>
-          <Route path="/setup" element={<Setup onSuccess={auth.refresh} />} />
+          <Route
+            path="/setup"
+            element={<Setup onSuccess={auth.refresh} connection={auth.connection} />}
+          />
           <Route path="*" element={<Navigate to="/setup" replace />} />
         </Routes>
       )}
 
       {auth.status === 'unauthenticated' && (
         <Routes>
-          <Route path="/login" element={<Login onSuccess={auth.refresh} />} />
+          <Route
+            path="/login"
+            element={<Login onSuccess={auth.refresh} connection={auth.connection} />}
+          />
           {/* If the user lands on /setup but the system is already
               bootstrapped, push them at /login — they can't re-setup. */}
           <Route path="/setup" element={<Navigate to="/login" replace />} />

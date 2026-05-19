@@ -757,7 +757,7 @@ export const api = {
   // =====================================================================
 
   bootstrapStatus: () =>
-    request<{ bootstrapped: boolean }>(`${BASE}/auth/bootstrap-status`),
+    request<BootstrapStatusResponse>(`${BASE}/auth/bootstrap-status`),
 
   bootstrap: (password: string) =>
     request<AuthTokenResponse>(`${BASE}/auth/bootstrap`, {
@@ -921,4 +921,22 @@ export interface AuthSessionResponse {
   issued_at_iso: string;
   expires_at_iso: string;
   expires_in_seconds: number;
+}
+
+// 0.13.3 — connection diagnostic returned with bootstrap-status so
+// the /login and /setup pages can render a warning when a reverse
+// proxy is misconfigured (HTTPS at the browser, plain HTTP + no
+// X-Forwarded-Proto reaching the API container).
+export interface ConnectionDiagnostic {
+  detected_https: boolean;
+  detection_source: 'url' | 'x-forwarded-proto' | 'origin' | 'referer' | 'none';
+  /** Non-null only when there's an actionable misconfiguration —
+   *  HTTPS detected via the Origin/Referer fallback rather than the
+   *  canonical X-Forwarded-Proto signal. */
+  warning: string | null;
+}
+
+export interface BootstrapStatusResponse {
+  bootstrapped: boolean;
+  connection?: ConnectionDiagnostic;
 }

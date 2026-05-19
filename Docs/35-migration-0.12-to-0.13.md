@@ -2,14 +2,16 @@
 
 **TL;DR:** Phase 6.4 adds password-protected authentication to URSA-OSCAR. Phase 6.4.1 makes service-to-service tokens fully auto-managed — operator only picks a password, the rest happens server-side.
 
-**Recommended image targets (Phase 6.4.1, zero copy-paste UX):**
+**Recommended image targets (Phase 6.4.1 + 0.13.2 cookie hotfix):**
 
 | Container | 0.12.x → | Target |
 |---|---|---|
-| `ursa-oscar-api` | 0.12.0 | **0.13.1** |
+| `ursa-oscar-api` | 0.12.0 | **0.13.2** |
 | `ursa-oscar-web` | 0.12.0 | **0.13.0** |
 | `ursa-oscar-mcp` | 0.10.0 | **0.11.1** |
 | `ursa-oscar-watcher` | 0.9.0 | **0.10.1** |
+
+The 0.13.2 API patch makes the session cookie's ``Secure`` flag scheme-aware: ``Secure`` only when the inbound request is HTTPS (direct or via ``X-Forwarded-Proto: https``). Without this patch, accessing URSA-OSCAR over plain HTTP on a LAN locked operators out — the browser stored the Secure cookie but refused to send it back over HTTP. If you have a TLS-terminating reverse proxy (Cloudflare tunnel, nginx, Caddy, Traefik), make sure it sets ``X-Forwarded-Proto: https`` so the cookie still gets ``Secure`` end-to-end.
 
 The 0.13.0 / 0.11.0 / 0.10.0 set (Phase 6.4) is still published and supported, but requires manual token paste-and-restart cycles for MCP and watcher. The 0.13.1 / 0.11.1 / 0.10.1 set (Phase 6.4.1) auto-manages those service tokens and is the recommended path.
 
@@ -53,7 +55,7 @@ In your compose env block (Dockge or `/opt/ursa-oscar/docker-compose.yml`):
 
 ```yaml
 ursa-oscar-api:
-  image: brain40/ursa-oscar-api:0.13.1
+  image: brain40/ursa-oscar-api:0.13.2
 
 ursa-oscar-mcp:
   image: brain40/ursa-oscar-mcp:0.11.1
@@ -70,7 +72,7 @@ Also update the version chips (purely cosmetic, surfaced on Settings → Configu
 ```yaml
 ursa-oscar-api:
   environment:
-    URSA_OSCAR_IMAGE_VERSION: 0.13.1
+    URSA_OSCAR_IMAGE_VERSION: 0.13.2
     URSA_OSCAR_MCP_IMAGE_VERSION: 0.11.1
     URSA_OSCAR_WEB_IMAGE_VERSION: 0.13.0
     URSA_OSCAR_WATCHER_IMAGE_VERSION: 0.10.1
@@ -191,7 +193,7 @@ docker compose up -d
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Web UI loops to `/login` after sign-in | Cookie not being set — check that `URSA_OSCAR_DEV_MODE` is **not** set in production (forces `samesite=lax`, `secure=False`) | Drop `URSA_OSCAR_DEV_MODE` from compose env if present |
+| Web UI loops to `/login` after sign-in | Pre-0.13.2: cookie has `Secure` flag, browser won't send it over HTTP. 0.13.2+: check that your reverse proxy sets `X-Forwarded-Proto: https` if you're behind one. | Upgrade to api ≥ 0.13.2 (scheme-aware cookies). Or temporarily set `URSA_OSCAR_DEV_MODE=true` to force loose cookies. |
 | Watcher logs `401 Unauthorized` | `URSA_OSCAR_WATCHER_TOKEN` is unset or stale | Regenerate via Settings → Account, paste, recreate |
 | MCP tools fail with 401 | `URSA_OSCAR_MCP_API_TOKEN` is unset or stale | Regenerate via Settings → Account, paste, recreate |
 | MCP container won't start, logs "JWT signing secret not configured" | The `/data:ro` mount is missing AND `URSA_OSCAR_JWT_SECRET` not set | Add the mount or the env var (see Step 2) |

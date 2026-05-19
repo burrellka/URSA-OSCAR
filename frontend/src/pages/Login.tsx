@@ -14,7 +14,7 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Lock } from 'lucide-react';
-import { api, ApiError } from '../api/client';
+import { api, ApiError, type ConnectionDiagnostic } from '../api/client';
 import {
   consumeReturnTo,
   // shared visual primitives from Setup.tsx so the two pages match.
@@ -23,13 +23,15 @@ import {
   authShellStyle,
   authCardStyle,
   AuthBrandHeader,
+  ConnectionWarning,
 } from './Setup';
 
 interface LoginProps {
   onSuccess: () => Promise<void> | void;
+  connection: ConnectionDiagnostic | null;
 }
 
-export default function Login({ onSuccess }: LoginProps) {
+export default function Login({ onSuccess, connection }: LoginProps) {
   const navigate = useNavigate();
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -71,6 +73,8 @@ export default function Login({ onSuccess }: LoginProps) {
     <div style={authShellStyle}>
       <div className="chart-card" style={authCardStyle}>
         <AuthBrandHeader />
+
+        <ConnectionWarning connection={connection} />
 
         <h2 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '0.25rem' }}>
           <Lock size={16} style={{ verticalAlign: -2, marginRight: '0.375rem' }} />

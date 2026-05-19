@@ -24,7 +24,12 @@
 // react-router's navigate() — the next API call will revalidate).
 
 import { useCallback, useEffect, useState } from 'react';
-import { api, ApiError, type AuthSessionResponse } from '../api/client';
+import {
+  api,
+  ApiError,
+  type AuthSessionResponse,
+  type ConnectionDiagnostic,
+} from '../api/client';
 
 export type AuthStatus =
   | 'loading'
@@ -35,6 +40,10 @@ export type AuthStatus =
 export interface AuthState {
   status: AuthStatus;
   session: AuthSessionResponse | null;
+  /** 0.13.3 — connection diagnostic from the most recent
+   *  bootstrap-status fetch. Login + Setup pages render the warning
+   *  field as a banner when set. */
+  connection: ConnectionDiagnostic | null;
   /** Re-poll bootstrap-status + session. Call after a successful
    *  login/setup or after a logout. */
   refresh: () => Promise<void>;
@@ -59,10 +68,15 @@ export function consumeReturnTo(fallback = '/'): string {
 export function useAuthState(): AuthState {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [session, setSession] = useState<AuthSessionResponse | null>(null);
+  const [connection, setConnection] = useState<ConnectionDiagnostic | null>(null);
 
   const refresh = useCallback(async () => {
     try {
       const boot = await api.bootstrapStatus();
+      // 0.13.3 — capture the connection diagnostic for /login + /setup
+      // banners. Backwards-compatible: pre-0.13.3 backends return no
+      // `connection` field; we just leave it null.
+      setConnection(boot.connection ?? null);
       if (!boot.bootstrapped) {
         setStatus('unbootstrapped');
         setSession(null);
@@ -106,5 +120,5 @@ export function useAuthState(): AuthState {
     void refresh();
   }, [refresh]);
 
-  return { status, session, refresh, signOut };
+  return { status, session, connection, refresh, signOut };
 }

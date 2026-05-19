@@ -17,17 +17,18 @@
 
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Lock, AlertTriangle } from 'lucide-react';
-import { api, ApiError } from '../api/client';
+import { Lock, AlertTriangle, ShieldAlert } from 'lucide-react';
+import { api, ApiError, type ConnectionDiagnostic } from '../api/client';
 import { consumeReturnTo } from '../lib/auth';
 
 const MIN_PASSWORD_LENGTH = 12;
 
 interface SetupProps {
   onSuccess: () => Promise<void> | void;
+  connection: ConnectionDiagnostic | null;
 }
 
-export default function Setup({ onSuccess }: SetupProps) {
+export default function Setup({ onSuccess, connection }: SetupProps) {
   const navigate = useNavigate();
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -70,6 +71,8 @@ export default function Setup({ onSuccess }: SetupProps) {
     <div style={authShellStyle}>
       <div className="chart-card" style={authCardStyle}>
         <AuthBrandHeader />
+
+        <ConnectionWarning connection={connection} />
 
         <h2 style={{ fontSize: '1.125rem', fontWeight: 600, marginBottom: '0.25rem' }}>
           <Lock size={16} style={{ verticalAlign: -2, marginRight: '0.375rem' }} />
@@ -163,6 +166,44 @@ function describeBody(body: unknown): string {
     return typeof d === 'string' ? d : JSON.stringify(d);
   }
   return JSON.stringify(body);
+}
+
+// ---------------------------------------------------------------------------
+// 0.13.3 — Connection diagnostic warning banner. Surfaced on /login
+// and /setup when the API detected an HTTPS browser connection via
+// the Origin/Referer fallback rather than X-Forwarded-Proto. Means
+// the operator's reverse proxy isn't forwarding the canonical scheme
+// header — login works (the fallback handles it) but the operator
+// should fix the proxy config for defense in depth.
+// ---------------------------------------------------------------------------
+
+export function ConnectionWarning({
+  connection,
+}: { connection: ConnectionDiagnostic | null }) {
+  if (!connection?.warning) return null;
+  return (
+    <div
+      role="alert"
+      style={{
+        display: 'flex',
+        gap: '0.5rem',
+        alignItems: 'flex-start',
+        padding: '0.625rem 0.75rem',
+        background: 'var(--status-warn-soft)',
+        border: '1px solid rgba(217,119,6,0.25)',
+        borderRadius: '6px',
+        marginBottom: '1rem',
+        fontSize: '0.8125rem',
+        color: '#92400e',
+        lineHeight: 1.4,
+      }}
+    >
+      <ShieldAlert size={16} style={{ marginTop: '0.125rem', flexShrink: 0 }} />
+      <span>
+        <strong>Reverse proxy misconfiguration.</strong> {connection.warning}
+      </span>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
