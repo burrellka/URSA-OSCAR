@@ -50,6 +50,7 @@ export default function Statistics() {
 
       {!loading && !error && filtered.length > 0 && (
         <>
+          <UsageBreakdown windowKey={windowKey} usedNights={filtered.length} />
           <AggregateTable nights={filtered} />
           <div className="stat-grid" style={{ marginTop: '1.5rem' }}>
             <Histogram title="Nightly AHI" values={filtered.map((n) => n.total_ahi)} digits={1} color="var(--accent-primary)" />
@@ -73,6 +74,67 @@ function filterByWindow(nights: NightlySummary[], w: Window): NightlySummary[] {
   const cutoffIso = cutoff.toISOString().slice(0, 10);
   return nights.filter((n) => n.date >= cutoffIso);
 }
+
+// 0.13.4 — surface operator compliance alongside clinical metrics.
+// For fixed windows (7/30/90 days) we can compute "used vs skipped"
+// precisely from the calendar range. For the 'all' window the
+// denominator is ambiguous (earliest data → today, but earliest may
+// pre-date when the operator actually started using URSA-OSCAR) so we
+// just show the night count without a usage percentage.
+function UsageBreakdown({
+  windowKey, usedNights,
+}: { windowKey: Window; usedNights: number }) {
+  if (windowKey === 'all') {
+    return (
+      <div className="chart-card" style={usageCardStyle}>
+        <span style={usageMainStyle}>{usedNights}</span>
+        <span style={usageLabelStyle}>
+          night{usedNights === 1 ? '' : 's'} with therapy data
+        </span>
+      </div>
+    );
+  }
+  const windowDays = windowKey === '7d' ? 7 : windowKey === '30d' ? 30 : 90;
+  const skipped = Math.max(0, windowDays - usedNights);
+  const usagePct = Math.round((usedNights / windowDays) * 1000) / 10;
+  return (
+    <div className="chart-card" style={usageCardStyle}>
+      <span style={usageMainStyle}>{usedNights} used</span>
+      <span style={usageDividerStyle}>/</span>
+      <span style={usageSkippedStyle}>{skipped} skipped</span>
+      <span style={usageDividerStyle}>·</span>
+      <span style={usagePctStyle}>{usagePct}% usage</span>
+      <span style={usageWindowStyle}>over the last {windowDays} days</span>
+    </div>
+  );
+}
+
+const usageCardStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'baseline',
+  gap: '0.5rem',
+  flexWrap: 'wrap',
+  marginBottom: '1rem',
+};
+const usageMainStyle: React.CSSProperties = {
+  fontSize: '1.125rem', fontWeight: 600, color: 'var(--text-primary)',
+};
+const usageSkippedStyle: React.CSSProperties = {
+  fontSize: '1.125rem', fontWeight: 500, color: 'var(--text-secondary)',
+};
+const usagePctStyle: React.CSSProperties = {
+  fontSize: '1.125rem', fontWeight: 600, color: 'var(--accent-text)',
+};
+const usageDividerStyle: React.CSSProperties = {
+  color: 'var(--text-muted)', fontSize: '1rem',
+};
+const usageLabelStyle: React.CSSProperties = {
+  fontSize: '0.875rem', color: 'var(--text-secondary)',
+};
+const usageWindowStyle: React.CSSProperties = {
+  fontSize: '0.875rem', color: 'var(--text-muted)', marginLeft: '0.5rem',
+};
+
 
 function AggregateTable({ nights }: { nights: NightlySummary[] }) {
   const rows: Array<{ label: string; pick: (n: NightlySummary) => number | null | undefined; digits?: number }> = [

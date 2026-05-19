@@ -12,6 +12,7 @@ import pandas as pd
 
 from ..storage.db import DuckDBManager
 from .metric_resolver import resolve_metric
+from .usage_rate import compute_usage_breakdown
 
 
 # Metrics where "lower is better" — informs the improvement framing.
@@ -93,16 +94,23 @@ def compare_periods(
             "interpretation": interpretation,
         }
 
+    # 0.13.4 — per-period usage breakdown so the UI can surface
+    # "X used / Y skipped" alongside the clinical metrics.
+    usage_a = compute_usage_breakdown(db, period_a_start, period_a_end)
+    usage_b = compute_usage_breakdown(db, period_b_start, period_b_end)
+
     return {
         "period_a": {
             "start": period_a_start.isoformat(),
             "end": period_a_end.isoformat(),
             "n_nights": int(_first_present(result_metrics, "period_a", "n") or 0),
+            **usage_a,
         },
         "period_b": {
             "start": period_b_start.isoformat(),
             "end": period_b_end.isoformat(),
             "n_nights": int(_first_present(result_metrics, "period_b", "n") or 0),
+            **usage_b,
         },
         "metrics": result_metrics,
         "summary": _build_summary(result_metrics, improvements, worsenings),

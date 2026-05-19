@@ -15,6 +15,7 @@ from scipy import stats
 
 from ..storage.db import DuckDBManager
 from .metric_resolver import resolve_metric
+from .usage_rate import compute_usage_breakdown
 
 # Metrics where "lower is better" — same set as compare_periods.
 _LOWER_IS_BETTER = frozenset({
@@ -35,11 +36,17 @@ def compute_trend(
     series = resolve_metric(db, metric, start, end).dropna()
     n = int(len(series))
 
+    # 0.13.4 — usage-rate breakdown alongside the trend math. Surfaces
+    # operator compliance (X of Y nights used) without affecting the
+    # regression itself.
+    usage = compute_usage_breakdown(db, start, end)
+
     if n < 5:
         return {
             "metric": metric,
             "date_range": {"start": start.isoformat(), "end": end.isoformat()},
             "n_nights": n,
+            **usage,
             "slope_per_day": None,
             "intercept": None,
             "r_squared": None,
@@ -82,6 +89,7 @@ def compute_trend(
         "metric": metric,
         "date_range": {"start": start.isoformat(), "end": end.isoformat()},
         "n_nights": n,
+        **usage,
         "slope_per_day": slope,
         "intercept": intercept,
         "r_squared": r_squared,

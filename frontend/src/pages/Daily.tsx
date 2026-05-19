@@ -292,8 +292,34 @@ export default function Daily() {
       {loading && <div className="loading">Loading {date ?? 'most recent night'}…</div>}
       {error && <div className="error-banner">{error}</div>}
 
-      {!loading && !error && !summary && (
+      {!loading && !error && !summary && allDates.length === 0 && (
         <div className="empty-state">No night data yet. Use <a href="/import">Import</a> to load some.</div>
+      )}
+
+      {/* 0.13.4 — distinguish "DB empty" from "this specific date had
+          no therapy session." The second case is now common because
+          the calendar only shows dates with data, but operators can
+          still type a no-session date into the URL. Make it clear
+          the date is intentional skip, not a missing-import bug. */}
+      {!loading && !error && !summary && allDates.length > 0 && date && (
+        <div className="empty-state" style={{ textAlign: 'left' }}>
+          <p style={{ margin: 0, fontWeight: 600, color: 'var(--text-primary)' }}>
+            No therapy session on {date}.
+          </p>
+          <p style={{ margin: '0.5rem 0 0', color: 'var(--text-secondary)', fontSize: '0.875rem' }}>
+            URSA-OSCAR only stores data for nights the CPAP recorded a session.
+            Operator-skipped nights and nights without device activity don't
+            appear in analytics or trends.
+          </p>
+          {allDates.length > 0 && (
+            <p style={{ margin: '0.5rem 0 0', color: 'var(--text-muted)', fontSize: '0.8125rem' }}>
+              Most recent night with data:{' '}
+              <a href={`/daily/${allDates[allDates.length - 1]}`}>
+                {allDates[allDates.length - 1]}
+              </a>
+            </p>
+          )}
+        </div>
       )}
 
       {shiftedSummary && (

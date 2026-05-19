@@ -177,6 +177,92 @@ def test_analytics_unknown_metric_400(api_client):
 
 
 # =====================================================================
+# 0.13.4 — usage-rate breakdown surfaced on analytics responses.
+# =====================================================================
+
+
+def test_compare_periods_includes_usage_breakdown_full_usage(api_client):
+    """Period a + b each span 2 calendar days; the canonical fixture has
+    data for every one of those nights, so usage = 100%."""
+    r = api_client.get(
+        "/api/v1/analytics/compare-periods",
+        params={
+            "period_a_start": "2026-05-07",
+            "period_a_end": "2026-05-08",
+            "period_b_start": "2026-05-09",
+            "period_b_end": "2026-05-10",
+        },
+    )
+    body = r.json()
+    for side in ("period_a", "period_b"):
+        usage = body[side]
+        assert usage["n_nights_in_range"] == 2
+        assert usage["n_nights_with_therapy"] == 2
+        assert usage["n_nights_skipped"] == 0
+        assert usage["usage_rate_pct"] == 100.0
+
+
+def test_compare_periods_usage_breakdown_with_gaps(api_client):
+    """Widen each period to include dates the operator never used the
+    machine. The fixture has 5 nights of data (5/7, 5/8, 5/9, 5/10,
+    5/12); 5/1-5/12 is 12 calendar days → 5/12 = 41.7% usage."""
+    r = api_client.get(
+        "/api/v1/analytics/compare-periods",
+        params={
+            "period_a_start": "2026-05-01",
+            "period_a_end": "2026-05-12",
+            "period_b_start": "2026-05-01",
+            "period_b_end": "2026-05-12",
+        },
+    )
+    body = r.json()
+    usage = body["period_a"]
+    assert usage["n_nights_in_range"] == 12
+    assert usage["n_nights_with_therapy"] == 5
+    assert usage["n_nights_skipped"] == 7
+    assert usage["usage_rate_pct"] == 41.7
+
+
+def test_trend_response_includes_usage_breakdown(api_client):
+    """Trend should surface the same breakdown even on the
+    insufficient-data branch (n_nights < 5 has nothing to do with
+    n_nights_with_therapy)."""
+    r = api_client.get(
+        "/api/v1/analytics/trend",
+        params={
+            "metric": "total_ahi",
+            "start_date": "2026-05-01",
+            "end_date": "2026-05-12",
+        },
+    )
+    body = r.json()
+    assert body["n_nights_in_range"] == 12
+    assert body["n_nights_with_therapy"] == 5
+    assert body["n_nights_skipped"] == 7
+    assert body["usage_rate_pct"] == 41.7
+
+
+def test_usage_breakdown_handles_inverted_range(api_client):
+    """Defensive: if start > end (shouldn't happen via API validation
+    but the helper still has to be safe), all fields go to zero. Uses
+    the existing app DB connection to avoid the DuckDB writer-lock
+    conflict that a second connection would hit."""
+    from datetime import date
+
+    from ursa_oscar.analytics.usage_rate import compute_usage_breakdown
+
+    u = compute_usage_breakdown(
+        api_client.app.state.db,
+        date(2026, 5, 10),
+        date(2026, 5, 7),
+    )
+    assert u["n_nights_in_range"] == 0
+    assert u["n_nights_with_therapy"] == 0
+    assert u["n_nights_skipped"] == 0
+    assert u["usage_rate_pct"] == 0.0
+
+
+# =====================================================================
 # Hard-delete purge endpoints
 # =====================================================================
 
