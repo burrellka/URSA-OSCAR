@@ -34,6 +34,7 @@ from .tools import (  # noqa: E402 (import after FastMCP instantiation is requir
     generate_report,                    # Phase 6 Ticket 6.3
     compare_periods,                    # Phase 3 Item 5A (Tier 2)
     event_distribution,
+    get_help_topic,                     # Phase 7.3 — in-app Help
     get_manual_log_summary,             # Phase 3 Item 5D (Tier 2)
     get_trend,                          # Phase 3 Item 5C (Tier 2)
     leak_profile,

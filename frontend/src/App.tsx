@@ -16,6 +16,7 @@ import DataManagement from './pages/DataManagement';
 import Setup from './pages/Setup';
 import Login from './pages/Login';
 import Account from './pages/Account';
+import Help from './pages/Help';
 import { useAuthState } from './lib/auth';
 
 /**
@@ -87,6 +88,10 @@ export default function App() {
             <Route path="settings/ai" element={<SettingsAi />} />
             <Route path="settings/account" element={<Account onAuthChanged={auth.refresh} />} />
             <Route path="data-management" element={<DataManagement />} />
+            {/* Phase 7 — Help system. /help redirects to first topic;
+                /help/:slug renders a specific topic. */}
+            <Route path="help" element={<Help />} />
+            <Route path="help/:slug" element={<Help />} />
             {/* If an authenticated user hits /login or /setup, send
                 them home — they're already in. */}
             <Route path="login" element={<Navigate to="/" replace />} />

@@ -27,6 +27,7 @@ from .api import (
     ai, analytics, events, exports, exports_oscar, health, imports,
     manual_logs, nights, profile, reports, system, timeseries, vocab,
 )
+from .api import help as help_api
 from .config import get_settings
 from .services.import_worker import ImportWorker
 from .storage import profile_store, vocab_store
@@ -175,6 +176,9 @@ def create_app() -> FastAPI:
     app.include_router(ai.router, dependencies=_AUTH_REQUIRED)
     # Phase 6 Ticket 6.3 — provider PDF reports.
     app.include_router(reports.router, dependencies=_AUTH_REQUIRED)
+    # Phase 7.3 — Help topic registry. Authenticated like the rest of
+    # the API; the MCP container calls these via its service token.
+    app.include_router(help_api.router, dependencies=_AUTH_REQUIRED)
 
     return app
 

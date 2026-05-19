@@ -1,4 +1,6 @@
+import { useState } from 'react';
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import AboutModal from './AboutModal';
 import {
   Calendar,
   Activity,
@@ -13,6 +15,8 @@ import {
   Settings as SettingsIcon,
   LogOut,
   KeyRound,
+  BookOpen,
+  Info,
   type LucideIcon,
 } from 'lucide-react';
 import type { AuthSessionResponse } from '../api/client';
@@ -32,6 +36,9 @@ const NAV: Array<{ to: string; label: string; Icon: LucideIcon; end?: boolean }>
   // Phase 3 Item 4B — Profile lives between Manual Logs and Settings.
   { to: '/profile', label: 'Profile', Icon: User },
   { to: '/settings', label: 'Settings', Icon: SettingsIcon },
+  // Phase 7 — in-app Help system. Pinned at the bottom of the nav
+  // because most operators open it less often than the dashboards.
+  { to: '/help', label: 'Help', Icon: BookOpen },
 ];
 
 interface LayoutProps {
@@ -41,6 +48,9 @@ interface LayoutProps {
 
 export default function Layout({ session, onSignOut }: LayoutProps) {
   const navigate = useNavigate();
+  // Phase 7.3 — About modal state. Opened from the sidebar footer's
+  // info icon; closed via the X, ESC, or backdrop click.
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   async function handleSignOut() {
     await onSignOut();
@@ -49,6 +59,7 @@ export default function Layout({ session, onSignOut }: LayoutProps) {
 
   return (
     <div className="app-container">
+      <AboutModal open={aboutOpen} onClose={() => setAboutOpen(false)} />
       <nav className="sidebar">
         <div className="logo">
           URSA-OSCAR
@@ -116,6 +127,15 @@ export default function Layout({ session, onSignOut }: LayoutProps) {
             >
               <KeyRound size={14} />
               <span>{session.user}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setAboutOpen(true)}
+              title="About URSA-OSCAR"
+              className="icon-btn"
+              style={{ padding: '0.25rem 0.375rem' }}
+            >
+              <Info size={14} />
             </button>
             <button
               type="button"

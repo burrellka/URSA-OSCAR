@@ -38,6 +38,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/pyproject.toml ./pyproject.toml
 COPY backend/src ./src
 
+# Phase 7.3 — Help system content. The markdown source-of-truth lives
+# in the frontend tree; the api container needs the same files so the
+# /api/v1/help endpoints (and the get_help_topic MCP tool that wraps
+# them) can serve the bodies. Copying at build time avoids runtime
+# coupling between containers.
+COPY frontend/src/help/content ./help/content
+
 # Editable install so the dev compose's /app/src bind mount immediately
 # reflects host edits into the running uvicorn process. Production builds
 # don't bind-mount anything, so editable just means the package metadata
