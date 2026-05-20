@@ -28,7 +28,7 @@ services:
       URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-1.1.0}
       URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-1.1.0}
       URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-1.1.0}
-      URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-1.0.0}
+      URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-1.1.0}
     networks:
       - kairos-net
     volumes:
@@ -74,7 +74,7 @@ services:
     restart: unless-stopped
 
   ursa-oscar-watcher:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-watcher:${URSA_OSCAR_WATCHER_IMAGE_VERSION:-1.0.0}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-watcher:${URSA_OSCAR_WATCHER_IMAGE_VERSION:-1.1.0}
     container_name: ursa-oscar-watcher
     environment:
       # Phase 4 Ticket 3 — async watcher loop. Polls the bind-mounted
