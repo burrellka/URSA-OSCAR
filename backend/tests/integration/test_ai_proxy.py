@@ -859,7 +859,7 @@ def test_chat_suppresses_intermediate_complete_during_tool_loop(
         lambda *_a, **_kw: _ScriptedAdapter(script),
     )
 
-    async def fake_execute_tool(name, args, api_base_url=None):
+    async def fake_execute_tool(name, args, api_base_url=None, auth_header=None):
         return {
             "ok": True,
             "data": {"date": "2026-05-13", "total_ahi": 3.94, "session_count": 2},
@@ -901,6 +901,146 @@ def test_chat_suppresses_intermediate_complete_during_tool_loop(
     assert types.index("tool_result") < types.index("text")
 
 
+def test_chat_forwards_session_cookie_as_bearer_to_loopback(
+    chat_ready_client, monkeypatch,
+):
+    """1.1.1 regression — Phase 6.4 added _AUTH_REQUIRED to every API
+    router; the AI proxy's loopback to /api/v1/night/... etc. needs the
+    operator's JWT or it 401s. The chat endpoint must forward the JWT
+    via the ``auth_header`` kwarg on execute_tool, and the value must
+    work whether the operator presented their JWT as a cookie (browser
+    session) or as a Bearer header (MCP/CLI client).
+
+    This locks down the cookie -> Bearer forwarding specifically — the
+    case that 1.1.0 shipped broken because the first fix only read the
+    Authorization header.
+    """
+    import ursa_oscar.api.ai as ai_module
+    from ursa_oscar.ai_proxy.providers.base import AiStreamEvent
+
+    script = [
+        [
+            AiStreamEvent(
+                event_type="tool_call_start",
+                payload={"id": "tu_01", "name": "get_nightly_summary"},
+            ),
+            AiStreamEvent(
+                event_type="tool_call_complete",
+                payload={
+                    "id": "tu_01",
+                    "name": "get_nightly_summary",
+                    "arguments": {"date": "2026-05-13"},
+                },
+            ),
+            AiStreamEvent(
+                event_type="complete",
+                payload={"stop_reason": "tool_use", "usage": {}},
+            ),
+        ],
+        [
+            AiStreamEvent(
+                event_type="text", payload={"text": "OK"},
+            ),
+            AiStreamEvent(
+                event_type="complete",
+                payload={"stop_reason": "end_turn", "usage": {"output_tokens": 1}},
+            ),
+        ],
+    ]
+
+    monkeypatch.setattr(
+        ai_module,
+        "build_adapter",
+        lambda *_a, **_kw: _ScriptedAdapter(script),
+    )
+
+    captured: dict = {}
+
+    async def fake_execute_tool(
+        name, args, api_base_url=None, auth_header=None,
+    ):
+        captured["name"] = name
+        captured["auth_header"] = auth_header
+        return {"ok": True, "data": {"date": "2026-05-13"}}
+
+    monkeypatch.setattr(ai_module, "execute_tool", fake_execute_tool)
+
+    # Browser-session case: the operator's JWT arrives as an
+    # ursa_oscar_session cookie. The chat endpoint must convert it
+    # into "Bearer <token>" and pass via auth_header.
+    chat_ready_client.cookies.set("ursa_oscar_session", "dummy-jwt-from-cookie")
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "How was my sleep?"}],
+        "context": {"current_date": "2026-05-13", "include_profile": False},
+    })
+    assert r.status_code == 200, r.text
+
+    assert captured["name"] == "get_nightly_summary"
+    assert captured["auth_header"] == "Bearer dummy-jwt-from-cookie", (
+        "Cookie session was not forwarded as Bearer header to the "
+        "loopback. This is the 1.1.0 launch bug — every tool call "
+        "would 401 against Phase 6.4 _AUTH_REQUIRED."
+    )
+
+    # Reset for the second case.
+    chat_ready_client.cookies.clear()
+    captured.clear()
+
+    # Reset the adapter so a fresh tool-call sequence runs.
+    monkeypatch.setattr(
+        ai_module,
+        "build_adapter",
+        lambda *_a, **_kw: _ScriptedAdapter([
+            [
+                AiStreamEvent(
+                    event_type="tool_call_start",
+                    payload={"id": "tu_02", "name": "get_nightly_summary"},
+                ),
+                AiStreamEvent(
+                    event_type="tool_call_complete",
+                    payload={
+                        "id": "tu_02",
+                        "name": "get_nightly_summary",
+                        "arguments": {"date": "2026-05-13"},
+                    },
+                ),
+                AiStreamEvent(
+                    event_type="complete",
+                    payload={"stop_reason": "tool_use", "usage": {}},
+                ),
+            ],
+            [
+                AiStreamEvent(
+                    event_type="text", payload={"text": "OK"},
+                ),
+                AiStreamEvent(
+                    event_type="complete",
+                    payload={
+                        "stop_reason": "end_turn",
+                        "usage": {"output_tokens": 1},
+                    },
+                ),
+            ],
+        ]),
+    )
+
+    # Bearer-header case: when no cookie is present, the inbound
+    # Authorization header is forwarded verbatim. Covers MCP / CLI
+    # callers that prefer Bearer over cookies.
+    r = chat_ready_client.post(
+        "/api/v1/ai/chat",
+        json={
+            "messages": [{"role": "user", "content": "How was my sleep?"}],
+            "context": {
+                "current_date": "2026-05-13", "include_profile": False,
+            },
+        },
+        headers={"Authorization": "Bearer dummy-jwt-from-header"},
+    )
+    assert r.status_code == 200, r.text
+    assert captured["auth_header"] == "Bearer dummy-jwt-from-header"
+
+
 # -------------------------------------------------------------------------
 # Phase 5.5 Item 3 — scripted-adapter coverage for the Q1-Q5 acceptance
 # matrix + the error paths the operator-led validation missed in 0.9.0.
@@ -939,7 +1079,7 @@ def _setup_chat(monkeypatch, script, tool_results: dict | list | None = None):
     if isinstance(tool_results, list):
         results_iter = iter(tool_results)
 
-        async def fake_execute(name, args, api_base_url=None):
+        async def fake_execute(name, args, api_base_url=None, auth_header=None):
             try:
                 return next(results_iter)
             except StopIteration:
@@ -947,12 +1087,12 @@ def _setup_chat(monkeypatch, script, tool_results: dict | list | None = None):
 
     elif isinstance(tool_results, dict):
 
-        async def fake_execute(name, args, api_base_url=None):
+        async def fake_execute(name, args, api_base_url=None, auth_header=None):
             return tool_results.get(name, {"ok": True, "data": {}})
 
     else:
 
-        async def fake_execute(name, args, api_base_url=None):
+        async def fake_execute(name, args, api_base_url=None, auth_header=None):
             return {"ok": True, "data": {}}
 
     monkeypatch.setattr(ai_module, "execute_tool", fake_execute)

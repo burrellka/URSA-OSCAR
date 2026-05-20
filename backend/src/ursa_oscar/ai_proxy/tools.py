@@ -660,6 +660,7 @@ async def execute_tool(
     tool_name: str,
     arguments: dict,
     api_base_url: str = "http://127.0.0.1:8000",
+    auth_header: str | None = None,
 ) -> dict:
     """Execute a tool by name and return its ``{ok, data, ...}`` envelope.
 
@@ -671,6 +672,12 @@ async def execute_tool(
 
     ``api_base_url`` defaults to localhost-loopback because the AI proxy
     runs inside the API container. The endpoint is overridable for tests.
+
+    ``auth_header`` — 1.1.1 fix. Phase 6.4 added ``_AUTH_REQUIRED`` to
+    every API router; this loopback path was missed. The chat endpoint
+    now forwards the operator's incoming Authorization header so the
+    loopback call carries proper bearer auth. Without it, every tool
+    call 401s with "Not authenticated".
     """
     if tool_name not in _TOOL_ROUTING:
         return _err("UNKNOWN_TOOL", f"No tool named '{tool_name}'")
@@ -678,8 +685,12 @@ async def execute_tool(
     route = _TOOL_ROUTING[tool_name]
     method = route["method"]
 
+    headers = {"Authorization": auth_header} if auth_header else None
+
     try:
-        async with httpx.AsyncClient(base_url=api_base_url, timeout=30.0) as client:
+        async with httpx.AsyncClient(
+            base_url=api_base_url, timeout=30.0, headers=headers,
+        ) as client:
             # Custom routers cover the cases where the path depends on the
             # arguments themselves (e.g., /night/{date} vs /nights?start=).
             if "router" in route:

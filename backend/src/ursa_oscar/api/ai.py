@@ -385,6 +385,22 @@ async def chat(req: ChatRequest, request: Request):
     server = request.scope.get("server") or ("127.0.0.1", 8000)
     api_base_url = f"http://{server[0]}:{server[1]}"
 
+    # 1.1.1 fix — Phase 6.4 added _AUTH_REQUIRED to every router but
+    # this loopback path didn't forward the operator JWT, so every
+    # tool call landed as anonymous and 401'd. ``_AUTH_REQUIRED``
+    # already validated the inbound JWT before we got here; we just
+    # need to relay it. Browser sessions present the JWT via the
+    # ``ursa_oscar_session`` cookie; MCP/CLI clients via Authorization
+    # Bearer header. Forward whichever the operator presented, as a
+    # Bearer header (the simpler of the two for httpx — and the
+    # backend's middleware accepts either form).
+    from ..auth.middleware import COOKIE_NAME as _SESSION_COOKIE
+    _cookie_token = request.cookies.get(_SESSION_COOKIE)
+    if _cookie_token:
+        auth_header = f"Bearer {_cookie_token}"
+    else:
+        auth_header = request.headers.get("authorization")
+
     async def event_generator():
         # 0.9.4 — emit an immediate SSE comment (keepalive) before the
         # first LLM byte arrives. Two things this protects against:
@@ -496,7 +512,9 @@ async def chat(req: ChatRequest, request: Request):
 
             # Execute each requested tool and append the result.
             for tc in pending_tool_calls:
-                result = await execute_tool(tc.name, tc.arguments, api_base_url)
+                result = await execute_tool(
+                    tc.name, tc.arguments, api_base_url, auth_header=auth_header,
+                )
                 yield _sse_pack(AiStreamEvent(
                     event_type="tool_result",
                     payload={"id": tc.id, "result": result},

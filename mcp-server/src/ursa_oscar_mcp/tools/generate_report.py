@@ -20,7 +20,7 @@ from datetime import date as date_t
 
 import httpx
 
-from ..client import api_post
+from ..client import api_post, get_client
 from ..envelope import _err
 from ..server import mcp
 
@@ -126,12 +126,15 @@ def generate_report(
         # Fall through to GET below.
         meta = None
 
-    # api_post hard-codes POST; the preview is GET. Use httpx directly.
+    # api_post hard-codes POST; the preview is GET. Use the auth-attaching
+    # get_client() so the API's Phase 6.4 _AUTH_REQUIRED check passes.
+    # 1.1.1 fix — previously used raw httpx.Client without bearer headers
+    # and 401'd on every call.
     api_base = _api_base_url()
     try:
-        with httpx.Client(timeout=120.0) as client:
+        with get_client(timeout=120.0) as client:
             preview = client.get(
-                f"{api_base}/api/v1/reports/preview-metadata",
+                "/api/v1/reports/preview-metadata",
                 params={
                     "template": template,
                     "start_date": start_date,
@@ -143,7 +146,7 @@ def generate_report(
 
             # Trigger render so the cache has it.
             gen = client.post(
-                f"{api_base}/api/v1/reports/generate",
+                "/api/v1/reports/generate",
                 json={
                     "template": template,
                     "start_date": start_date,
@@ -171,8 +174,8 @@ def generate_report(
     # round-trip to the cache stats endpoint — instead, ask the API
     # directly which fingerprint matches.
     try:
-        with httpx.Client(timeout=10.0) as client:
-            stats = client.get(f"{api_base}/api/v1/analytics/cache/stats")
+        with get_client(timeout=10.0) as client:
+            stats = client.get("/api/v1/analytics/cache/stats")
             stats.raise_for_status()
             # The most recent entry under tool_name="generate_report"
             # is the one we just stored. We can't read fingerprints from
