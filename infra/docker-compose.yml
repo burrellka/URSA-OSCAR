@@ -6,7 +6,7 @@ networks:
 
 services:
   ursa-oscar-api:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-api:${URSA_OSCAR_API_IMAGE_VERSION:-1.1.1}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-api:${URSA_OSCAR_API_IMAGE_VERSION:-1.1.2}
     container_name: ursa-oscar-api
     environment:
       URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
@@ -25,10 +25,10 @@ services:
       # Phase 5.5 — strict version pinning. Defaults below mirror the
       # tag the `image:` lines pin to, so the Settings UI version chips
       # always reflect what's actually deployed.
-      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-1.1.1}
-      URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-1.1.1}
-      URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-1.1.1}
-      URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-1.1.1}
+      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-1.1.2}
+      URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-1.1.2}
+      URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-1.1.2}
+      URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-1.1.2}
     networks:
       - kairos-net
     volumes:
@@ -37,7 +37,7 @@ services:
     restart: unless-stopped
 
   ursa-oscar-mcp:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-mcp:${URSA_OSCAR_MCP_IMAGE_VERSION:-1.1.1}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-mcp:${URSA_OSCAR_MCP_IMAGE_VERSION:-1.1.2}
     container_name: ursa-oscar-mcp
     environment:
       URSA_OSCAR_API_URL: http://ursa-oscar-api:8000
@@ -65,7 +65,7 @@ services:
       - ursa-oscar-api
 
   ursa-oscar-web:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-web:${URSA_OSCAR_WEB_IMAGE_VERSION:-1.1.1}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-web:${URSA_OSCAR_WEB_IMAGE_VERSION:-1.1.2}
     container_name: ursa-oscar-web
     networks:
       - kairos-net
@@ -74,7 +74,7 @@ services:
     restart: unless-stopped
 
   ursa-oscar-watcher:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-watcher:${URSA_OSCAR_WATCHER_IMAGE_VERSION:-1.1.1}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-watcher:${URSA_OSCAR_WATCHER_IMAGE_VERSION:-1.1.2}
     container_name: ursa-oscar-watcher
     environment:
       # Phase 4 Ticket 3 — async watcher loop. Polls the bind-mounted

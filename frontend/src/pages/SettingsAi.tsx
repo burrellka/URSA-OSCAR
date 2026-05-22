@@ -234,6 +234,38 @@ export default function SettingsAi() {
     edit.provider_id && config?.api_keys_set?.[edit.provider_id]
   );
 
+  // 1.1.2 — Test connection button now reflects the SAVED config, not
+  // in-flight edits. The /test endpoint probes whatever the backend has
+  // persisted; enabling the button on unsaved field changes invites a
+  // confusing 400 ("no provider configured" or similar) when the operator
+  // hasn't hit Save yet. Five disabled states, each with its own tooltip.
+  // Local LLM presets with supports_local_routing=true skip the key
+  // requirement because most local servers accept empty auth.
+  const savedProviderId = config?.provider_id ?? null;
+  const savedProviderMatches = savedProviderId === edit.provider_id;
+  const requiresKey = !selectedPreset?.supports_local_routing;
+  const testReady =
+    !!savedProviderId &&
+    savedProviderMatches &&
+    (!requiresKey || keyAlreadyStored);
+  const editsDiverged =
+    !!savedProviderId && (
+      edit.provider_id !== savedProviderId ||
+      (edit.api_key ?? '') !== '' ||
+      edit.model !== (config?.model ?? '') ||
+      edit.endpoint_url !== (config?.endpoint_url ?? '')
+    );
+  const testTooltip =
+    !savedProviderId
+      ? 'Save a provider first'
+      : !savedProviderMatches
+      ? 'Save the selected provider first'
+      : requiresKey && !keyAlreadyStored
+      ? 'Save an API key first'
+      : editsDiverged
+      ? 'Save your changes first (test probes the saved config)'
+      : 'Probe the saved provider';
+
   return (
     <div>
       <div className="page-header">
@@ -432,8 +464,8 @@ export default function SettingsAi() {
               type="button"
               className="btn-secondary"
               onClick={onTest}
-              disabled={testing || (!keyAlreadyStored && !edit.api_key)}
-              title={(!keyAlreadyStored && !edit.api_key) ? 'Save an API key first' : 'Probe the provider with a 1-token request'}
+              disabled={testing || !testReady || editsDiverged}
+              title={testTooltip}
             >
               {testing ? <Loader2 size={14} className="spin" /> : 'Test connection'}
             </button>

@@ -77,10 +77,12 @@ PRESETS: list[ProviderPreset] = [
         label="Google Gemini (OpenAI-compat)",
         adapter="openai_compat",
         default_endpoint="https://generativelanguage.googleapis.com/v1beta/openai",
+        # 1.1.2 — gemini-2.0-flash-exp and gemini-1.5-pro are deprecated
+        # as of May 2026. gemini-1.5-flash is on the deprecation track too.
+        # Default to gemini-3.5-flash; the freeform model field accepts any
+        # other model string for operators who want a specific snapshot.
         default_models=[
-            "gemini-2.0-flash-exp",
-            "gemini-1.5-pro",
-            "gemini-1.5-flash",
+            "gemini-3.5-flash",
         ],
         auth_header_name="Authorization",
         auth_header_format="Bearer {key}",
@@ -94,10 +96,11 @@ PRESETS: list[ProviderPreset] = [
         label="OpenRouter",
         adapter="openai_compat",
         default_endpoint="https://openrouter.ai/api/v1",
+        # 1.1.2 — drop google/gemini-2.0-flash (deprecated upstream).
         default_models=[
             "anthropic/claude-sonnet-4.5",
             "openai/gpt-4o",
-            "google/gemini-2.0-flash",
+            "google/gemini-3.5-flash",
         ],
         auth_header_name="Authorization",
         auth_header_format="Bearer {key}",

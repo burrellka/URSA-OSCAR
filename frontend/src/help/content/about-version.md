@@ -2,11 +2,11 @@
 
 URSA-OSCAR ships as four Docker images that are versioned together. The version chip on the Settings → Configuration page shows the exact tag your stack is running.
 
-## Current major version
+## Current version
 
-**1.1.1** — Auth fix for in-app chat tool calls.
+**1.1.2** — Settings polish.
 
-This is the version that fixed a Phase 6.4 oversight: the in-app AI chat panel's tool-call loopback path didn't forward the operator's bearer token to the API, so every tool call returned "Not authenticated." Same fix applied to the `generate_report` MCP tool. The headline content of the 1.1 release line — in-app Help, `get_help_topic` MCP tool, About modal — was introduced in 1.1.0.
+This is the version that tightened the Test connection button on the AI Settings page (it now reflects the saved config rather than in-flight unsaved edits, eliminating a confusing 400 response), and refreshed the Gemini provider preset's default models to remove deprecated entries. The headline content of the 1.1 release line — in-app Help, `get_help_topic` MCP tool, About modal — was introduced in 1.1.0; the chat-panel auth fix landed in 1.1.1.
 
 ## Release lineage
 
@@ -28,7 +28,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **0.13.6** — Anthropic prompt caching on the Claude adapter
 - **1.0.0** — Version-only release marking the close of pre-1.0 work
 - **1.1.0** — Documentation, Help System, AI integration
-- **1.1.1** — Auth fix for in-app chat + `generate_report` MCP tool (this release)
+- **1.1.1** — Auth fix for in-app chat + `generate_report` MCP tool
+- **1.1.2** — Test connection button discipline + refreshed Gemini preset (this release)
 
 ## How to check the running version
 
