@@ -18,34 +18,6 @@ It does this as a self-hosted Docker stack. Your CPAP data never leaves your har
 
 ---
 
-## How URSA enables AI-native CPAP management
-
-URSA was built around a specific problem: CPAP therapy generates structured data nightly, but turning that data into sustained understanding (what is working, what is not, what to try next) requires consistent interpretation that most patients can't do alone. Sleep clinics see patients briefly every few months. The patient lives with the therapy every night. URSA closes that gap by making the data continuously available to an AI conversation the patient drives.
-
-### The primary use case: AI as informed thinking partner
-
-URSA's data layer is exposed through the Model Context Protocol. Any MCP-capable AI client (Claude, Claude Code, or other compatible clients) can connect to a URSA deployment and read the operator's nightly data, sleep studies, treatment history, and manual logs in real time. The operator typically configures a dedicated AI conversation with a focused system prompt describing their condition, history, and goals, plus relevant clinical artifacts (sleep study reports, titration data, equipment specifications). That conversation then serves as an ongoing informed thinking partner: interpreting trends, flagging anomalies, helping the operator prepare for sleep clinic appointments, and explaining what the data is actually showing.
-
-The conversation is not a replacement for clinical care. It is a specialized AI surface with sustained access to the operator's own data, doing what the operator alone cannot reliably do every morning without help: synthesize last night's numbers against the prior weeks, notice patterns, and translate raw data into questions worth asking a clinician.
-
-This is the use case that motivated the project. The operator built URSA after years of intermittent CPAP success, multiple machines and masks, periods of giving up entirely, with OSCAR providing the data but no path to consistent interpretation. With URSA connected to a properly-prompted Claude conversation, that interpretation became sustained and routine, and the therapy started working.
-
-### The secondary use case: in-app AI assistant
-
-Not every deployment can expose a public MCP endpoint. Some users run URSA on a home network behind NAT, without Cloudflare Tunnel or equivalent, and have no easy way to connect an external AI client.
-
-For those deployments, URSA includes a built-in AI assistant accessible from the web UI. The assistant uses any compatible LLM provider (Anthropic, OpenAI-compatible cloud providers, or a local model running via LM Studio, Ollama, or any OpenAI-compatible local endpoint). The assistant has access to the same data the external client would have access to through MCP, so the in-app experience is functionally equivalent.
-
-The in-app assistant is the fallback path. The external MCP-connected conversation is the primary path. Both work; the external path delivers more capability because external clients (particularly Claude with project knowledge and longer context windows) can carry richer operator-specific context than the in-app surface can hold.
-
-### What this enables in practice
-
-The pattern lets a CPAP patient operate as their own informed advocate. Sleep clinics see patients for fifteen minutes every six months. The patient lives with the therapy every night. URSA plus a properly configured AI conversation closes the asymmetry: the patient walks into their appointment with weeks of synthesized data, specific questions about specific nights, and a clear sense of what they've already tried.
-
-The architectural pattern that enables this, MCP-exposed analytical data accessible to specialized AI conversations, is documented as a reusable template at [github.com/burrellka/mcp-server-template](https://github.com/burrellka/mcp-server-template). URSA is the reference implementation of that pattern for sleep apnea therapy.
-
----
-
 ## Why URSA-OSCAR exists
 
 [OSCAR](https://www.sleepfiles.com/OSCAR/) is the gold standard for desktop CPAP analysis. URSA-OSCAR isn't a replacement — it addresses different workflow needs: 24/7 automated ingestion, longitudinal statistical analysis beyond OSCAR's scope, conversational query interface, and clinician-ready report generation.
@@ -145,6 +117,34 @@ Maintainer-facing docs:
 - [Docs/17-oauth-setup.md](Docs/17-oauth-setup.md) — connecting a claude.ai Custom Connector
 - [Docs/35-migration-0.12-to-0.13.md](Docs/35-migration-0.12-to-0.13.md) — upgrade from pre-1.0 versions
 - [Docs/architect-decisions/](Docs/architect-decisions/) — ADRs (no Tailwind, MCP-as-thin-proxy, DuckDB concurrency, MCP template adoption)
+
+---
+
+## How URSA enables AI-native CPAP management
+
+URSA was built around a specific problem: CPAP therapy generates structured data nightly, but turning that data into sustained understanding (what is working, what is not, what to try next) requires consistent interpretation that most patients can't do alone. Sleep clinics see patients briefly every few months. The patient lives with the therapy every night. URSA closes that gap by making the data continuously available to an AI conversation the patient drives.
+
+### The primary use case: AI as informed thinking partner
+
+URSA's data layer is exposed through the Model Context Protocol. Any MCP-capable AI client (Claude, Claude Code, or other compatible clients) can connect to a URSA deployment and read the operator's nightly data, sleep studies, treatment history, and manual logs in real time. The operator typically configures a dedicated AI conversation with a focused system prompt describing their condition, history, and goals, plus relevant clinical artifacts (sleep study reports, titration data, equipment specifications). That conversation then serves as an ongoing informed thinking partner: interpreting trends, flagging anomalies, helping the operator prepare for sleep clinic appointments, and explaining what the data is actually showing.
+
+The conversation is not a replacement for clinical care. It is a specialized AI surface with sustained access to the operator's own data, doing what the operator alone cannot reliably do every morning without help: synthesize last night's numbers against the prior weeks, notice patterns, and translate raw data into questions worth asking a clinician.
+
+This is the use case that motivated the project. The operator built URSA after years of intermittent CPAP success, multiple machines and masks, periods of giving up entirely, with OSCAR providing the data but no path to consistent interpretation. With URSA connected to a properly-prompted Claude conversation, that interpretation became sustained and routine, and the therapy started working.
+
+### The secondary use case: in-app AI assistant
+
+Not every deployment can expose a public MCP endpoint. Some users run URSA on a home network behind NAT, without Cloudflare Tunnel or equivalent, and have no easy way to connect an external AI client.
+
+For those deployments, URSA includes a built-in AI assistant accessible from the web UI. The assistant uses any compatible LLM provider (Anthropic, OpenAI-compatible cloud providers, or a local model running via LM Studio, Ollama, or any OpenAI-compatible local endpoint). The assistant has access to the same data the external client would have access to through MCP, so the in-app experience is functionally equivalent.
+
+The in-app assistant is the fallback path. The external MCP-connected conversation is the primary path. Both work; the external path delivers more capability because external clients (particularly Claude with project knowledge and longer context windows) can carry richer operator-specific context than the in-app surface can hold.
+
+### What this enables in practice
+
+The pattern lets a CPAP patient operate as their own informed advocate. Sleep clinics see patients for fifteen minutes every six months. The patient lives with the therapy every night. URSA plus a properly configured AI conversation closes the asymmetry: the patient walks into their appointment with weeks of synthesized data, specific questions about specific nights, and a clear sense of what they've already tried.
+
+The architectural pattern that enables this, MCP-exposed analytical data accessible to specialized AI conversations, is documented as a reusable template at [github.com/burrellka/mcp-server-template](https://github.com/burrellka/mcp-server-template). URSA is the reference implementation of that pattern for sleep apnea therapy.
 
 ---
 
