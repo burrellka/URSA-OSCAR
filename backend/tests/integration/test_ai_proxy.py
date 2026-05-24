@@ -901,6 +901,73 @@ def test_chat_suppresses_intermediate_complete_during_tool_loop(
     assert types.index("tool_result") < types.index("text")
 
 
+@pytest.mark.asyncio
+async def test_openai_compat_emits_reasoning_events_for_thinking_models():
+    """1.1.3 regression — the OpenAI-compat adapter must surface
+    chain-of-thought deltas from thinking-mode models (Qwen3,
+    DeepSeek-R1, etc.) as ``reasoning`` events, not silently discard
+    them.
+
+    Qwen3 via LocalAI / Ollama emits ``delta.reasoning`` with
+    ``delta.content`` null for the entire thinking phase. Before the
+    1.1.3 fix, the adapter only read ``delta.content`` and dropped
+    every reasoning chunk on the floor, producing the "121 seconds of
+    silence then [DONE]" UX the operator reported on launch week.
+
+    DeepSeek's native API uses ``delta.reasoning_content`` (different
+    field name, same role). Adapter accepts both.
+    """
+    # Synthetic SSE chunks matching the Qwen3-4b shape captured from
+    # the live LocalAI endpoint during the 1.1.3 investigation.
+    sse_lines = [
+        'data: {"choices":[{"delta":{"role":"assistant","content":null}}]}',
+        'data: {"choices":[{"delta":{"content":null,"reasoning":"Let me think."}}]}',
+        'data: {"choices":[{"delta":{"content":null,"reasoning":" 2+2"}}]}',
+        # Also exercise the DeepSeek-style field name in the same stream.
+        'data: {"choices":[{"delta":{"content":null,"reasoning_content":" equals"}}]}',
+        # Final answer.
+        'data: {"choices":[{"delta":{"content":"The answer is 4."}}]}',
+        'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+        "data: [DONE]",
+    ]
+
+    class _FakeResponse:
+        async def aiter_lines(self):
+            for line in sse_lines:
+                yield line
+
+    adapter = OpenAiCompatAdapter(
+        api_key="test", endpoint="http://test.local/v1",
+        model="qwen3-4b", extra_headers={},
+    )
+    events = []
+    async for ev in adapter._consume_sse(_FakeResponse()):
+        events.append(ev)
+
+    reasoning_events = [e for e in events if e.event_type == "reasoning"]
+    text_events = [e for e in events if e.event_type == "text"]
+    complete_events = [e for e in events if e.event_type == "complete"]
+
+    # Three reasoning chunks: two `reasoning` + one `reasoning_content`.
+    assert len(reasoning_events) == 3, (
+        f"Expected 3 reasoning events, got {len(reasoning_events)}. "
+        "If 0: the adapter is still discarding thinking-mode chunks "
+        "(1.1.3 regression). If >3: an unrelated delta path is "
+        "double-emitting."
+    )
+    assert reasoning_events[0].payload["text"] == "Let me think."
+    assert reasoning_events[1].payload["text"] == " 2+2"
+    assert reasoning_events[2].payload["text"] == " equals"  # reasoning_content path
+
+    # One regular text event for the final answer (content delta).
+    assert len(text_events) == 1
+    assert text_events[0].payload["text"] == "The answer is 4."
+
+    # Clean termination.
+    assert len(complete_events) == 1
+    assert complete_events[0].payload["stop_reason"] == "stop"
+
+
 def test_chat_forwards_session_cookie_as_bearer_to_loopback(
     chat_ready_client, monkeypatch,
 ):

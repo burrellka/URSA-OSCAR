@@ -54,8 +54,13 @@ class OpenAiCompatAdapter(ProviderAdapter):
 
         headers = {"Content-Type": "application/json", **self.extra_headers}
 
+        # 1.1.3 — stream timeout bumped from 120s to 300s for thinking-mode
+        # models (Qwen3, DeepSeek-R1, etc.) which can spend 90+ seconds on
+        # the chain-of-thought before emitting the first content token.
+        # Read timeout is the relevant one; connect/write/pool stay short.
+        timeout = httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0)
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream("POST", url, json=body, headers=headers) as resp:
                     if resp.status_code >= 400:
                         text = await resp.aread()
@@ -212,6 +217,22 @@ class OpenAiCompatAdapter(ProviderAdapter):
                 yield AiStreamEvent(
                     event_type="text",
                     payload={"text": delta["content"]},
+                )
+
+            # 1.1.3 — reasoning delta. Thinking-mode models (Qwen3,
+            # DeepSeek-R1, etc.) emit chain-of-thought in a separate
+            # field. The naming varies by provider/server:
+            #   - Qwen3 via LocalAI/Ollama:  delta.reasoning
+            #   - DeepSeek / Alibaba native: delta.reasoning_content
+            # Surface as a distinct `reasoning` event so the UI can
+            # render it visually separate from the final answer (and
+            # so subsequent chat turns don't carry the chain-of-thought
+            # back into the conversation context).
+            reasoning_text = delta.get("reasoning") or delta.get("reasoning_content")
+            if reasoning_text:
+                yield AiStreamEvent(
+                    event_type="reasoning",
+                    payload={"text": reasoning_text},
                 )
 
             # Tool-call deltas. OpenAI streams partial arguments — each

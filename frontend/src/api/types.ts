@@ -354,6 +354,7 @@ export interface AiConfigPatch {
 
 export type AiStreamEventType =
   | 'text'
+  | 'reasoning'              // 1.1.3 — chain-of-thought from thinking-mode models
   | 'tool_call_start'
   | 'tool_call_input'
   | 'tool_call_complete'

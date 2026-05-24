@@ -399,15 +399,24 @@ def discover_sessions(datalog_dir: Path) -> list[SessionEDFs]:
 
     Sessions usually have a CSL + EVE pair (annotation files) at one prefix
     and the BRP/PLD/SA2 trio at a prefix a few seconds later (when the device
-    starts logging waveforms after stabilizing). We group by the closest
-    matching prefix.
+    starts logging waveforms after stabilizing). We group by temporal
+    proximity: any two files whose timestamps are within
+    ``SESSION_GROUPING_WINDOW_SECONDS`` of each other belong to the same
+    logical session.
+
+    1.1.3 fix — the prior implementation bucketed by HH:MM (clock-minute
+    prefix), which would split a single session whenever the boot moment
+    straddled a minute boundary. A common ResMed pattern (CSL/EVE at
+    01:04:53, BRP/PLD/SA2 at 01:05:00, only 7s apart) produced two phantom
+    sessions because 01:04 and 01:05 hashed to different buckets. Sliding-
+    window clustering eliminates the boundary case.
     """
     datalog_dir = Path(datalog_dir)
     files = sorted(datalog_dir.glob("*.edf"))
-    # Bucket by (date, hour, minute) — sessions within the same minute group together
-    sessions: dict[str, dict[str, Path]] = {}
+
+    # First pass: parse each file's full timestamp.
+    parsed: list[tuple[datetime, str, str, Path]] = []
     for f in files:
-        # Filename like 20260508_220523_EVE.edf
         stem = f.stem
         try:
             date_part, time_part, kind = stem.split("_", 2)
@@ -416,21 +425,42 @@ def discover_sessions(datalog_dir: Path) -> list[SessionEDFs]:
         kind = kind.upper()
         if kind not in {"CSL", "EVE", "BRP", "PLD", "SA2"}:
             continue
-        # Group by the minute — sessions within 60s of each other are the same session
-        key_minute = f"{date_part}_{time_part[:4]}"
-        bucket = sessions.setdefault(key_minute, {})
-        # Use the earliest timestamp string seen for this minute as the session id
-        bucket.setdefault("_session_id", f"{date_part}_{time_part}")
-        # If a kind is already present, keep the earlier one (CSL/EVE prefix wins
-        # over BRP/PLD/SA2 prefix when they're seconds apart)
+        try:
+            ts = datetime.strptime(f"{date_part}_{time_part}", "%Y%m%d_%H%M%S")
+        except ValueError:
+            continue
+        parsed.append((ts, f"{date_part}_{time_part}", kind, f))
+
+    parsed.sort(key=lambda x: x[0])
+
+    # Second pass: cluster by temporal proximity. A new cluster starts
+    # whenever the next file's timestamp exceeds the prior file's by more
+    # than SESSION_GROUPING_WINDOW_SECONDS. Real session restarts on a
+    # ResMed AirSense 11 are minutes-to-hours apart (mask off for a
+    # bathroom break, etc.), well beyond the 60s window.
+    clusters: list[dict] = []
+    for ts, ts_str, kind, path in parsed:
+        if (
+            clusters
+            and (ts - clusters[-1]["_last_ts"]).total_seconds()
+            <= SESSION_GROUPING_WINDOW_SECONDS
+        ):
+            bucket = clusters[-1]
+        else:
+            bucket = {"_session_id": ts_str, "_last_ts": ts}
+            clusters.append(bucket)
+        # Extend the cluster's trailing edge so a sequence of three files
+        # spaced 30s apart still clusters together.
+        bucket["_last_ts"] = ts
+        # First-seen wins per kind; the earlier timestamp also wins the
+        # session_id slot.
         if kind not in bucket:
-            bucket[kind] = f
-            # Update session id if this file's timestamp is earlier
-            if f"{date_part}_{time_part}" < bucket["_session_id"]:
-                bucket["_session_id"] = f"{date_part}_{time_part}"
+            bucket[kind] = path
+        if ts_str < bucket["_session_id"]:
+            bucket["_session_id"] = ts_str
 
     out: list[SessionEDFs] = []
-    for _, bucket in sorted(sessions.items()):
+    for bucket in clusters:
         out.append(
             SessionEDFs(
                 session_timestamp_str=bucket["_session_id"],
@@ -442,3 +472,18 @@ def discover_sessions(datalog_dir: Path) -> list[SessionEDFs]:
             )
         )
     return out
+
+
+# How close (in seconds) two EDF files must be in time to be considered
+# the same session. Empirical bounds observed in the field:
+#   - Within-session boot-to-waveform offset: typically 5-7 seconds
+#     (CSL/EVE at boot, BRP/PLD/SA2 a few seconds later)
+#   - Real session restart (failed boot, immediate retry): ~50 seconds
+#     observed on the 2026-05-09 fixture
+#   - Normal session restart (mask off then back on): minutes-to-hours
+#
+# 30 seconds threads the needle between these bounds. Wider windows
+# merged the 50-second restart case into one session and lost the real
+# session's duration; tighter windows would have split the boot-to-
+# waveform offset into separate sessions.
+SESSION_GROUPING_WINDOW_SECONDS = 30

@@ -4,9 +4,15 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
-**1.1.2** — Settings polish.
+**1.1.3** — Session boundary fix + thinking-mode model support.
 
-This is the version that tightened the Test connection button on the AI Settings page (it now reflects the saved config rather than in-flight unsaved edits, eliminating a confusing 400 response), and refreshed the Gemini provider preset's default models to remove deprecated entries. The headline content of the 1.1 release line — in-app Help, `get_help_topic` MCP tool, About modal — was introduced in 1.1.0; the chat-panel auth fix landed in 1.1.1.
+This is the version that fixed two bugs:
+
+1. The EDF importer was bucketing files by clock-minute prefix, which split a single ResMed session into two whenever the boot moment straddled a minute boundary (events file at `01:04:53`, waveforms at `01:05:00`, 7 seconds apart but in different minute buckets). The result was a duplicated session inflating mask-on duration by the length of the affected session. Replaced with sliding-window temporal clustering (30-second tolerance) that handles the device's normal boot-to-waveform offset while still keeping legitimate session restarts (50+ seconds apart) separate. Existing data with the bug needs a force re-import to pick up the corrected session boundaries.
+
+2. The OpenAI-compat adapter silently discarded `delta.reasoning` (Qwen3 via LocalAI / Ollama) and `delta.reasoning_content` (DeepSeek-R1) deltas. Thinking-mode models would emit 80+ seconds of chain-of-thought into a void, then the stream would close without ever surfacing an answer. The adapter now reads both naming conventions and emits a new `reasoning` event type. The chat panel renders these as a collapsible "Reasoning" trail above the assistant's content, open by default while in-flight (so the user sees activity), collapsed once the final answer arrives. Stream timeout bumped to 300 seconds for thinking-mode models.
+
+The headline content of the 1.1 release line (in-app Help, `get_help_topic` MCP tool, About modal) was introduced in 1.1.0; the chat-panel auth fix landed in 1.1.1; the Test connection button discipline and refreshed Gemini provider preset landed in 1.1.2.
 
 ## Release lineage
 
@@ -29,7 +35,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.0.0** — Version-only release marking the close of pre-1.0 work
 - **1.1.0** — Documentation, Help System, AI integration
 - **1.1.1** — Auth fix for in-app chat + `generate_report` MCP tool
-- **1.1.2** — Test connection button discipline + refreshed Gemini preset (this release)
+- **1.1.2** — Test connection button discipline + refreshed Gemini preset
+- **1.1.3** — Session boundary fix + thinking-mode model support (this release)
 
 ## How to check the running version
 

@@ -45,6 +45,12 @@ interface ToolCallDisplay {
 interface DisplayMessage {
   role: 'user' | 'assistant';
   content: string;
+  /** 1.1.3 — chain-of-thought from thinking-mode models (Qwen3,
+   *  DeepSeek-R1, etc.). Surfaced separately so it doesn't pollute
+   *  the assistant's final message, and so follow-up conversation
+   *  turns don't carry the reasoning back to the LLM as if it were
+   *  the answer. Rendered as a collapsible "Reasoning" trail. */
+  reasoning?: string;
   tool_calls?: ToolCallDisplay[];
   in_flight?: boolean;
   /** Epoch ms when the assistant turn started streaming. Used to
@@ -353,6 +359,16 @@ function applyStreamEvent(
         msg.content = msg.content + text;
         break;
       }
+      case 'reasoning': {
+        // 1.1.3 — thinking-model chain-of-thought (Qwen3, DeepSeek-R1).
+        // Appended to a separate `reasoning` field rendered as a
+        // collapsible trail in the UI. Critically: NOT mixed into
+        // `content`, so the assistant's final message stays clean and
+        // follow-up turns don't carry the reasoning back to the LLM.
+        const text = String(event.payload?.text || '');
+        msg.reasoning = (msg.reasoning || '') + text;
+        break;
+      }
       case 'tool_call_start': {
         const id = String(event.payload?.id || '');
         const name = String(event.payload?.name || 'unknown');
@@ -533,12 +549,38 @@ function MessageBubble({ message, now }: { message: DisplayMessage; now: number 
           message.content
         ) : (
           <div className="markdown-body">
+            {/* 1.1.3 — Reasoning trail for thinking-mode models (Qwen3,
+                DeepSeek-R1). Collapsible so the chain-of-thought is
+                discoverable but not visually dominant. Open by default
+                while in flight so the user sees progress; collapsed
+                once the final answer arrives. */}
+            {message.reasoning && (
+              <details
+                open={message.in_flight && !message.content}
+                style={{
+                  marginBottom: message.content ? '0.5rem' : 0,
+                  fontSize: '0.8125rem',
+                  color: 'var(--text-secondary, #6b7280)',
+                  borderLeft: '2px solid var(--border-secondary, #e5e7eb)',
+                  paddingLeft: '0.5rem',
+                }}
+              >
+                <summary style={{ cursor: 'pointer', fontStyle: 'italic', userSelect: 'none' }}>
+                  {message.in_flight && !message.content ? 'Reasoning…' : 'Reasoning'}
+                </summary>
+                <div style={{ whiteSpace: 'pre-wrap', marginTop: '0.25rem', opacity: 0.85 }}>
+                  {message.reasoning}
+                </div>
+              </details>
+            )}
             {message.content ? (
               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                 {message.content}
               </ReactMarkdown>
             ) : (
-              message.in_flight ? <em style={{ opacity: 0.6 }}>thinking…</em> : null
+              message.in_flight && !message.reasoning ? (
+                <em style={{ opacity: 0.6 }}>thinking…</em>
+              ) : null
             )}
           </div>
         )}

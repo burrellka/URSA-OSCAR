@@ -55,6 +55,15 @@ class AiStreamEvent(BaseModel):
 
     Event types:
       text            — append ``payload.text`` to the assistant message
+      reasoning       — thinking-model chain-of-thought content;
+                        ``payload.text`` is a delta of the reasoning trace.
+                        UI renders this separately from ``text`` so the
+                        reasoning doesn't pollute the assistant's final
+                        message (and follow-up turns don't carry it back
+                        to the LLM as if it were the answer). Emitted by
+                        adapters for providers that expose chain-of-thought
+                        as a distinct field (Qwen3's ``reasoning``,
+                        DeepSeek's ``reasoning_content``, etc.).
       tool_call_start — assistant has begun emitting a tool call;
                         ``payload.id`` + ``payload.name`` known
       tool_call_input — partial JSON arguments for a tool call —
@@ -71,6 +80,7 @@ class AiStreamEvent(BaseModel):
     """
     event_type: Literal[
         "text",
+        "reasoning",
         "tool_call_start",
         "tool_call_input",
         "tool_call_complete",
