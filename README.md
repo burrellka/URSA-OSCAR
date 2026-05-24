@@ -4,7 +4,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Docker](https://img.shields.io/badge/Docker-2496ED?logo=docker&logoColor=white)](https://hub.docker.com/u/brain40)
-[![Release](https://img.shields.io/badge/release-1.1.3-16a34a.svg)](https://github.com/burrellka/URSA-OSCAR/releases/tag/v1.1.3)
+[![Release](https://img.shields.io/badge/release-1.1.4-16a34a.svg)](https://github.com/burrellka/URSA-OSCAR/releases/tag/v1.1.4)
 
 URSA-OSCAR reads ResMed AirSense CPAP data and provides:
 
@@ -56,10 +56,10 @@ If you're satisfied with OSCAR's desktop workflow, you don't need URSA-OSCAR. If
 
 ```bash
 # Pull the four images
-docker pull brain40/ursa-oscar-api:1.1.3
-docker pull brain40/ursa-oscar-mcp:1.1.3
-docker pull brain40/ursa-oscar-web:1.1.3
-docker pull brain40/ursa-oscar-watcher:1.1.3
+docker pull brain40/ursa-oscar-api:1.1.4
+docker pull brain40/ursa-oscar-mcp:1.1.4
+docker pull brain40/ursa-oscar-web:1.1.4
+docker pull brain40/ursa-oscar-watcher:1.1.4
 
 # Clone for the compose file (or copy infra/docker-compose.production.yml directly)
 git clone https://github.com/burrellka/URSA-OSCAR.git

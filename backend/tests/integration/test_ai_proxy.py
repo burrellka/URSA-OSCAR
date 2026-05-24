@@ -901,6 +901,131 @@ def test_chat_suppresses_intermediate_complete_during_tool_loop(
     assert types.index("tool_result") < types.index("text")
 
 
+def test_chat_surfaces_diagnostic_for_malformed_tool_call_as_content(
+    chat_ready_client, monkeypatch,
+):
+    """1.1.4 regression — when an under-capable local model emits a few
+    characters of JSON as ``delta.content`` (trying to write a tool-call
+    as text instead of using the OpenAI tool-call format) and then
+    finishes with ``stop_reason="stop"`` and no tool_calls, the chat
+    handler must emit a friendly diagnostic error rather than letting
+    the user see a confusing single ``{`` in the chat panel.
+
+    Real-world trigger: Qwen3-4b on CPU + URSA's full 18-tool surface.
+    The model can't format the tool call correctly with the prompt
+    complexity, so it emits ``{"`` and stops.
+    """
+    import ursa_oscar.api.ai as ai_module
+    from ursa_oscar.ai_proxy.providers.base import AiStreamEvent
+
+    # Scripted adapter that emits exactly the failure shape: one text
+    # event with `{"` content, then complete with stop_reason="stop".
+    script = [
+        [
+            AiStreamEvent(event_type="text", payload={"text": "{\""}),
+            AiStreamEvent(
+                event_type="complete",
+                payload={"stop_reason": "stop", "usage": None},
+            ),
+        ],
+    ]
+
+    monkeypatch.setattr(
+        ai_module,
+        "build_adapter",
+        lambda *_a, **_kw: _ScriptedAdapter(script),
+    )
+
+    async def fake_execute_tool(name, args, api_base_url=None, auth_header=None):
+        return {"ok": True, "data": {}}
+
+    monkeypatch.setattr(ai_module, "execute_tool", fake_execute_tool)
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "Hello"}],
+        "context": {"current_date": "2026-05-23", "include_profile": False},
+    })
+    assert r.status_code == 200, r.text
+    events = _parse_sse_events(r.content)
+    types = [e["event_type"] for e in events]
+
+    # The text event still gets through (operator briefly sees `{"`
+    # before the diagnostic banner replaces it).
+    assert "text" in types
+
+    # The critical assertion: a diagnostic error event must follow.
+    error_events = [e for e in events if e["event_type"] == "error"]
+    assert len(error_events) == 1, (
+        f"Expected one diagnostic error event for malformed-tool-call "
+        f"shape; got events={types}. If empty, the heuristic in "
+        f"ai.py didn't fire — check the conditions (saw_text, "
+        f"content_stripped startswith {{, stop_reason='stop')."
+    )
+    err = error_events[0]
+    assert err["payload"]["code"] == "MODEL_INCOMPLETE_RESPONSE"
+    assert "model isn't capable" in err["payload"]["message"].lower() or \
+        "partial response" in err["payload"]["message"].lower()
+
+    # The complete event MUST NOT be sent when we surface the
+    # diagnostic — the error event is the terminal frame instead.
+    # (Sending both would confuse the client's state machine which
+    # treats the first of complete/error as end-of-stream.)
+    complete_events = [e for e in events if e["event_type"] == "complete"]
+    assert len(complete_events) == 0, (
+        "Diagnostic-shaped failure should terminate with error event, "
+        "not complete event."
+    )
+
+
+def test_chat_does_not_misfire_diagnostic_on_legitimate_short_response(
+    chat_ready_client, monkeypatch,
+):
+    """1.1.4 — the diagnostic heuristic must NOT fire for legitimate
+    short responses. A model answering 'Yes.' to a yes/no question is
+    valid and must pass through unchanged.
+
+    Distinguishes from the bug case by: content doesn't start with `{`.
+    """
+    import ursa_oscar.api.ai as ai_module
+    from ursa_oscar.ai_proxy.providers.base import AiStreamEvent
+
+    script = [
+        [
+            AiStreamEvent(event_type="text", payload={"text": "Yes."}),
+            AiStreamEvent(
+                event_type="complete",
+                payload={"stop_reason": "stop", "usage": None},
+            ),
+        ],
+    ]
+
+    monkeypatch.setattr(
+        ai_module,
+        "build_adapter",
+        lambda *_a, **_kw: _ScriptedAdapter(script),
+    )
+
+    async def fake_execute_tool(name, args, api_base_url=None, auth_header=None):
+        return {"ok": True, "data": {}}
+
+    monkeypatch.setattr(ai_module, "execute_tool", fake_execute_tool)
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "Yes or no?"}],
+        "context": {"current_date": "2026-05-23", "include_profile": False},
+    })
+    assert r.status_code == 200, r.text
+    events = _parse_sse_events(r.content)
+    types = [e["event_type"] for e in events]
+
+    # Normal completion: text event, then complete. No diagnostic.
+    assert "error" not in types, (
+        f"Diagnostic heuristic over-fired on legitimate short response. "
+        f"Events: {types}"
+    )
+    assert "complete" in types
+
+
 @pytest.mark.asyncio
 async def test_openai_compat_emits_reasoning_events_for_thinking_models():
     """1.1.3 regression — the OpenAI-compat adapter must surface

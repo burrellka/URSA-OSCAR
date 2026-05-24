@@ -438,6 +438,14 @@ async def chat(req: ChatRequest, request: Request):
         for loop_n in range(8):
             pending_tool_calls: list[AiToolCall] = []
             saw_text = False
+            # 1.1.4 — accumulate text content to detect the "malformed
+            # tool-call as content" failure mode that under-capable local
+            # models (e.g. Qwen3-4b on CPU + URSA's full 18-tool surface)
+            # hit. The model emits a few characters of JSON (typically
+            # `{"`) trying to write a tool-call as text, then stops. The
+            # heuristic check after the loop turns this into a friendly
+            # diagnostic instead of rendering the broken `{` to the user.
+            accumulated_text = ""
             stop_reason: str | None = None
             errored = False
 
@@ -479,6 +487,7 @@ async def chat(req: ChatRequest, request: Request):
 
                     if event.event_type == "text":
                         saw_text = True
+                        accumulated_text += str(event.payload.get("text", ""))
                     elif event.event_type == "tool_call_complete":
                         pending_tool_calls.append(
                             AiToolCall(
@@ -496,6 +505,46 @@ async def chat(req: ChatRequest, request: Request):
 
             if not pending_tool_calls:
                 # No more tools requested — the conversation is done.
+                # 1.1.4 — diagnostic for the "model emitted a malformed
+                # tool-call as content" failure mode. When an under-
+                # capable local model (e.g. Qwen3-4b with URSA's full
+                # 18-tool surface) tries to write a tool call as JSON
+                # text instead of using the OpenAI tool-call format, it
+                # typically emits just `{"` (or similar) and then
+                # finishes with stop_reason="stop". The user sees a
+                # confusing single `{` in the chat panel. Detect this
+                # shape and surface a friendly diagnostic with concrete
+                # next steps instead.
+                content_stripped = accumulated_text.strip()
+                if (
+                    saw_text
+                    and len(content_stripped) <= 10
+                    and content_stripped.startswith("{")
+                    and (stop_reason or "stop") == "stop"
+                ):
+                    logger.info(
+                        "ai/chat: detected malformed-tool-call shape "
+                        "(content=%r, stop_reason=%s); surfacing diagnostic",
+                        accumulated_text, stop_reason,
+                    )
+                    yield _sse_pack(AiStreamEvent(
+                        event_type="error",
+                        payload={
+                            "code": "MODEL_INCOMPLETE_RESPONSE",
+                            "message": (
+                                "The model returned only a partial response "
+                                "(likely a failed tool-call attempt). The "
+                                "configured model isn't capable enough for "
+                                "URSA's tool surface. Recommended next steps: "
+                                "switch to Claude API (Settings → AI "
+                                "Assistant), use a larger local model "
+                                "(Qwen3-30b-instruct, Llama-3.3-70b-instruct), "
+                                "or run on GPU instead of CPU."
+                            ),
+                        },
+                    ))
+                    return
+
                 # Emit the captured final complete now (if any) so the
                 # client gets a clean end-of-stream signal.
                 if final_complete is not None:
