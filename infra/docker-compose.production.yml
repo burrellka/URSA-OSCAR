@@ -30,20 +30,14 @@ services:
       # at /data/jwt_secret on first boot (mode 0600). Set explicitly
       # only when you want to manage rotation yourself.
       URSA_OSCAR_JWT_SECRET: ${URSA_OSCAR_JWT_SECRET:-}
-      # Image versions surfaced in the Settings page. Set via the build
-      # script (build_and_push.ps1 --Version 0.4.0 -> baked into each
-      # image's ENV URSA_OSCAR_IMAGE_VERSION) and threaded to the API via
-      # docker-compose so the Settings page can show every container's
-      # tag without needing Docker-socket access.
-      # Phase 5.5 — strict version pinning policy. Defaults here MUST
-      # mirror the `image: ...:X.Y.Z` tags above; the Settings UI's
-      # version chips read these env vars, and any drift between
-      # `:latest` and the cosmetic chip caused operator confusion during
-      # the Phase 5 patch cycle.
-      URSA_OSCAR_IMAGE_VERSION: ${URSA_OSCAR_API_IMAGE_VERSION:-1.1.3}
-      URSA_OSCAR_MCP_IMAGE_VERSION: ${URSA_OSCAR_MCP_IMAGE_VERSION:-1.1.3}
-      URSA_OSCAR_WEB_IMAGE_VERSION: ${URSA_OSCAR_WEB_IMAGE_VERSION:-1.1.3}
-      URSA_OSCAR_WATCHER_IMAGE_VERSION: ${URSA_OSCAR_WATCHER_IMAGE_VERSION:-1.1.3}
+      # 1.1.3 — version chips are now self-introspecting. The API reads
+      # its own version from packaging metadata, queries the MCP
+      # container's /version endpoint, reads the watcher's
+      # /data/versions/watcher.txt (written at watcher startup), and the
+      # web bundle bakes its version at Vite build time. Operators no
+      # longer keep image tags and display env vars in sync. The previous
+      # URSA_OSCAR_{,MCP_,WEB_,WATCHER_}IMAGE_VERSION env vars are
+      # retained as optional explicit overrides for testing scenarios.
     networks:
       - kairos-net
     volumes:

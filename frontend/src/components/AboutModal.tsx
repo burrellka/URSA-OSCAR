@@ -86,7 +86,9 @@ export default function AboutModal({ open, onClose }: AboutModalProps) {
               <tbody>
                 <VersionRow label="API" version={cfg.images.api} />
                 <VersionRow label="MCP" version={cfg.images.mcp} />
-                <VersionRow label="Web" version={cfg.images.web} />
+                {/* 1.1.3 — web version from the bundle's baked constant
+                    if the API didn't supply an override. */}
+                <VersionRow label="Web" version={cfg.images.web || __URSA_WEB_VERSION__} />
                 <VersionRow label="Watcher" version={cfg.images.watcher} />
               </tbody>
             </table>

@@ -87,9 +87,13 @@ export default function Settings() {
                 label="Database size"
                 value={cfg.api.db_size_bytes === null ? '—' : formatBytes(cfg.api.db_size_bytes)}
               />
-              <ConfigRow label="API image version" value={`brain40/ursa-oscar-api:${cfg.images.api}`} code />
+              <ConfigRow label="API image version" value={cfg.images.api ? `brain40/ursa-oscar-api:${cfg.images.api}` : 'unknown'} code />
               <ConfigRow label="MCP image version" value={cfg.images.mcp ? `brain40/ursa-oscar-mcp:${cfg.images.mcp}` : 'unknown'} code />
-              <ConfigRow label="Web image version" value={cfg.images.web ? `brain40/ursa-oscar-web:${cfg.images.web}` : 'unknown'} code />
+              {/* 1.1.3 — web version comes from the bundle's own baked
+                  constant (no API roundtrip). API-supplied cfg.images.web
+                  still wins when the operator sets URSA_OSCAR_WEB_IMAGE_VERSION
+                  as an explicit display override. */}
+              <ConfigRow label="Web image version" value={`brain40/ursa-oscar-web:${cfg.images.web || __URSA_WEB_VERSION__}`} code />
               <ConfigRow label="Watcher image version" value={cfg.images.watcher ? `brain40/ursa-oscar-watcher:${cfg.images.watcher}` : 'unknown'} code />
             </tbody>
           </table>

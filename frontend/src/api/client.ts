@@ -883,7 +883,12 @@ export interface SystemConfig {
     dev_bypass_enabled: boolean;
   };
   images: {
-    api: string;
+    // 1.1.3 — every field can now be null. API introspects all four
+    // (importlib.metadata for self, /version probe for MCP, shared
+    // /data/versions/watcher.txt for watcher). Web stays null unless
+    // the operator sets an explicit display override; the bundle's
+    // baked __URSA_WEB_VERSION__ is the fallback the UI reads.
+    api: string | null;
     mcp: string | null;
     web: string | null;
     watcher: string | null;

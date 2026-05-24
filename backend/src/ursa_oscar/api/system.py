@@ -13,21 +13,116 @@ Masking rules (mirror the work-order's table):
 - OAuth client secret: never any portion — display ``set`` / ``not set``
 - Other config (URLs, paths, image versions): plain text
 
-Image versions are read from the API container's own env (baked at build
-time) plus the MCP/web/watcher image versions which the API receives via
-docker-compose env. Defaults to ``"dev"`` for unbuilt local images.
+1.1.3 — image-version reporting is now self-introspecting. Each service
+is the source of truth for its OWN version, eliminating the operator's
+need to keep image tags and display env vars in sync:
+
+  - API:     ``importlib.metadata.version('ursa-oscar-backend')``
+  - MCP:     queried via the MCP container's ``/version`` endpoint
+  - Watcher: read from ``<data_dir>/versions/watcher.txt`` (the
+             watcher writes this at startup; same shared-volume pattern
+             as ``/data/service_tokens/watcher.jwt``)
+  - Web:     reported client-side via a Vite-baked constant in the JS
+             bundle (no API roundtrip — Settings UI reads it directly)
+
+Operator-supplied env vars still act as overrides if explicitly set,
+for testing / dev scenarios. Empty / unset = use the introspected
+value.
 """
 from __future__ import annotations
 
+import logging
 import os
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 
 from ..config import get_settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1/system", tags=["system"])
+
+
+def _self_api_version() -> str:
+    """Return the API container's own packaged version. Falls back to
+    ``'dev'`` when running in an unpackaged source tree (rare; pip
+    install -e . is enough to populate the metadata)."""
+    try:
+        return _pkg_version("ursa-oscar-backend")
+    except PackageNotFoundError:
+        return "dev"
+
+
+async def _mcp_version_via_http(internal_url: str | None) -> str | None:
+    """Query the MCP container's /version endpoint. Returns None on
+    any failure (timeout, 404, etc.) so the chip can show 'unknown'
+    rather than blocking the whole response."""
+    if not internal_url:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.get(f"{internal_url.rstrip('/')}/version")
+            if r.status_code != 200:
+                return None
+            data = r.json()
+            v = data.get("version") if isinstance(data, dict) else None
+            return v if isinstance(v, str) else None
+    except Exception as e:
+        logger.debug("MCP /version probe failed: %s", e)
+        return None
+
+
+def _watcher_version_from_file(data_dir: Path) -> str | None:
+    """Read the watcher's startup-written version file. Returns None
+    if the file doesn't exist (watcher hasn't booted yet or the
+    operator is running an older image that doesn't write it)."""
+    try:
+        p = data_dir / "versions" / "watcher.txt"
+        if p.exists():
+            return p.read_text(encoding="utf-8").strip() or None
+    except OSError as e:
+        logger.debug("Watcher version file read failed: %s", e)
+    return None
+
+
+async def _resolve_image_versions(request: Request) -> dict:
+    """Return the four image version strings, preferring introspection
+    over operator env-var overrides.
+
+    Each chip can be ``None`` if introspection didn't work AND the
+    operator hasn't set the override env var; the Settings UI renders
+    'unknown' in that case.
+    """
+    settings = get_settings()
+
+    # API: always self-introspect; env var overrides only when explicitly set.
+    api_ver = settings.api_image_version or _self_api_version()
+
+    # MCP: query the sibling container; env var overrides.
+    if settings.mcp_image_version:
+        mcp_ver: str | None = settings.mcp_image_version
+    else:
+        mcp_ver = await _mcp_version_via_http(settings.mcp_internal_url)
+
+    # Watcher: read the shared-volume file the watcher writes at startup.
+    if settings.watcher_image_version:
+        watcher_ver: str | None = settings.watcher_image_version
+    else:
+        db_path = Path(getattr(request.app.state.db, "path", settings.db_path))
+        data_dir = db_path.parent
+        watcher_ver = _watcher_version_from_file(data_dir)
+
+    # Web: still surfaced from env if the operator explicitly sets it
+    # (some operators care to pin a display value); otherwise None and
+    # the Settings UI fills it from the Vite-baked __URSA_WEB_VERSION__
+    # constant client-side. No HTTP roundtrip to the web container.
+    web_ver = settings.web_image_version
+
+    return {"api": api_ver, "mcp": mcp_ver, "web": web_ver, "watcher": watcher_ver}
 
 
 def _mask_partial(value: str | None, head: int = 3, tail: int = 2) -> str | None:
@@ -53,7 +148,7 @@ def _db_size_bytes(path: str) -> int | None:
 
 
 @router.get("/config")
-def get_system_config(request: Request) -> dict:
+async def get_system_config(request: Request) -> dict:
     """Masked operational config for the Settings page.
 
     Every secret value is masked server-side BEFORE returning. Bearer + OAuth
@@ -61,14 +156,19 @@ def get_system_config(request: Request) -> dict:
     ``{"set": true/false}``. Plain values (URLs, paths, sizes, image
     versions) pass through.
 
-    All four image versions are surfaced. The API knows its own version
-    directly (env var baked at build time) plus what was passed for the
-    MCP/web/watcher containers via docker-compose. When unset, the
-    response reports ``"dev"`` / ``null`` — never raises.
+    Image versions are resolved by introspection in 1.1.3+: the API reads
+    its own version from packaging metadata, queries the MCP container's
+    /version endpoint, reads the watcher's startup-written version file,
+    and leaves ``web`` blank for the Settings UI to fill from its baked
+    constant. Operator env-var overrides still apply when explicitly set.
+    The chip can be ``null`` if introspection failed AND no override was
+    set; the UI renders 'unknown' in that case.
     """
     settings = get_settings()
     db: object = request.app.state.db
     db_path = str(getattr(db, "path", settings.db_path))
+
+    images = await _resolve_image_versions(request)
 
     return {
         "mcp": {
@@ -84,12 +184,7 @@ def get_system_config(request: Request) -> dict:
             "db_size_bytes": _db_size_bytes(db_path),
             "dev_bypass_enabled": settings.dev_bypass_enabled,
         },
-        "images": {
-            "api": settings.api_image_version,
-            "mcp": settings.mcp_image_version,
-            "web": settings.web_image_version,
-            "watcher": settings.watcher_image_version,
-        },
+        "images": images,
     }
 
 

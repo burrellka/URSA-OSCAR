@@ -58,9 +58,16 @@ class Settings(BaseSettings):
     mcp_bearer_token: str | None = Field(default=None, alias="URSA_OSCAR_MCP_BEARER_TOKEN")
     mcp_oauth_client_id: str | None = Field(default=None, alias="URSA_OSCAR_MCP_OAUTH_CLIENT_ID")
     mcp_oauth_client_secret: str | None = Field(default=None, alias="URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET")
-    # Image versions baked at build time via Docker ARG. Default "dev" if
-    # the image wasn't built by build_and_push.ps1.
-    api_image_version: str = Field(default="dev", alias="URSA_OSCAR_IMAGE_VERSION")
+    # 1.1.3 — image-version env vars retained as optional operator
+    # overrides only. The runtime defaults to introspecting each
+    # service's own packaged version (importlib.metadata for Python
+    # services, /data/versions/<svc>.txt for sibling services that
+    # write at startup, Vite-baked constant for the web bundle). See
+    # ursa_oscar.api.system._resolve_image_versions for the resolution
+    # logic. The fields below only matter when an operator explicitly
+    # sets the env var (e.g. for testing or to pin a display value
+    # that doesn't match the actual running code).
+    api_image_version: str | None = Field(default=None, alias="URSA_OSCAR_IMAGE_VERSION")
     mcp_image_version: str | None = Field(default=None, alias="URSA_OSCAR_MCP_IMAGE_VERSION")
     web_image_version: str | None = Field(default=None, alias="URSA_OSCAR_WEB_IMAGE_VERSION")
     watcher_image_version: str | None = Field(default=None, alias="URSA_OSCAR_WATCHER_IMAGE_VERSION")
