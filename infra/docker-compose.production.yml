@@ -10,7 +10,7 @@ networks:
 
 services:
   ursa-oscar-api:
-    image: brain40/ursa-oscar-api:1.1.4
+    image: brain40/ursa-oscar-api:1.1.5
     container_name: ursa-oscar-api
     environment:
       URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
@@ -30,7 +30,7 @@ services:
       # at /data/jwt_secret on first boot (mode 0600). Set explicitly
       # only when you want to manage rotation yourself.
       URSA_OSCAR_JWT_SECRET: ${URSA_OSCAR_JWT_SECRET:-}
-      # 1.1.4 — version chips are now self-introspecting. The API reads
+      # 1.1.5 — version chips are now self-introspecting. The API reads
       # its own version from packaging metadata, queries the MCP
       # container's /version endpoint, reads the watcher's
       # /data/versions/watcher.txt (written at watcher startup), and the
@@ -46,7 +46,7 @@ services:
     restart: unless-stopped
 
   ursa-oscar-mcp:
-    image: brain40/ursa-oscar-mcp:1.1.4
+    image: brain40/ursa-oscar-mcp:1.1.5
     container_name: ursa-oscar-mcp
     environment:
       # MCP reads from the API container over kairos-net (no direct DuckDB
@@ -79,15 +79,17 @@ services:
       # Host 8085 (8082 is taken on kairos-net by localrecall) -> container 8000
       - "8085:8000"
     volumes:
-      # Shared data volume — used so MCP can read /data/jwt_secret when
-      # URSA_OSCAR_JWT_SECRET isn't set in env. Read-only is sufficient.
-      - /srv/ursa-oscar/data:/data:ro
+      # 1.1.5 — MCP needs /data:rw (was :ro) to persist DCR-registered
+      # OAuth clients to /data/mcp_oauth_clients.json. Same trust model
+      # as the API and watcher containers (both already :rw); the /data
+      # dir is operator-owned on a private LAN volume.
+      - /srv/ursa-oscar/data:/data
     restart: unless-stopped
     depends_on:
       - ursa-oscar-api
 
   ursa-oscar-web:
-    image: brain40/ursa-oscar-web:1.1.4
+    image: brain40/ursa-oscar-web:1.1.5
     container_name: ursa-oscar-web
     networks:
       - kairos-net
@@ -96,7 +98,7 @@ services:
     restart: unless-stopped
 
   ursa-oscar-watcher:
-    image: brain40/ursa-oscar-watcher:1.1.4
+    image: brain40/ursa-oscar-watcher:1.1.5
     container_name: ursa-oscar-watcher
     environment:
       # Phase 6.4.1 — outgoing API bearer token. OPTIONAL override; when

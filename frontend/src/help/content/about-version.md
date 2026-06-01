@@ -4,6 +4,10 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
+**1.1.5** — RFC 7591 Dynamic Client Registration on the MCP server.
+
+Prior versions had DCR disabled — the only OAuth client the MCP server would authenticate was the pre-registered claude.ai client. Any other MCP client (KAIROS, third-party MCP clients, anything that follows the MCP spec's standard discovery flow) was unable to register its own redirect_uri and got `400 Bad Request` at `/authorize`. The MCP spec requires DCR support for general-purpose servers; URSA now provides it. `POST /register` per RFC 7591: caller supplies `client_name`, `redirect_uris`, `grant_types`, `response_types`, gets back a fresh `client_id` + `client_secret`. Registrations persist to `/data/mcp_oauth_clients.json` and survive container restart. The pre-registered claude.ai client is reconstructed from env vars on every boot (env vars remain the source of truth for that one specific client). Operators upgrading from earlier 1.1.x: the MCP container's `/data` mount must change from `:ro` to `:rw` so the JSON file can be written; both compose templates have been updated. 5 regression tests cover DCR registration, persistence across restart, exclusion of the pre-registered client from disk persistence, and graceful handling of corrupt stores.
+
 **1.1.4** — Local-model UX polish.
 
 This is the version that added the malformed-tool-call diagnostic. When an under-capable local model (Qwen3-4b on CPU, etc.) tries to emit a JSON tool-call as text content and gives up after a few characters, the chat panel previously rendered the partial JSON literally (the user saw a confusing single `{` or `{"`). The chat handler now detects this shape (text content under 10 chars starting with `{`, `stop_reason="stop"`, no tool_calls) and surfaces a friendly diagnostic message with concrete next steps (switch to Claude API, use a larger local model, or run on GPU). The version-introspection refactor that landed in 1.1.3 means image-version chips are now self-reporting; operators no longer keep image tags and display env vars in sync.
@@ -41,7 +45,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.1.1** — Auth fix for in-app chat + `generate_report` MCP tool
 - **1.1.2** — Test connection button discipline + refreshed Gemini preset
 - **1.1.3** — Session boundary fix + thinking-mode model support + version self-introspection
-- **1.1.4** — Local-model malformed-tool-call diagnostic (this release)
+- **1.1.4** — Local-model malformed-tool-call diagnostic
+- **1.1.5** — RFC 7591 Dynamic Client Registration on the MCP server (this release)
 
 ## How to check the running version
 

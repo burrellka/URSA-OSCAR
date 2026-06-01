@@ -58,7 +58,7 @@ def main() -> None:
 
     print(
         "ursa-oscar-mcp: SSE listening on :8000 "
-        "(oauth=ready, dcr=DISABLED, pre_registered_client=required, "
+        "(oauth=ready, dcr=ENABLED, pre_registered_client=required, "
         "static_bearer=enabled, version_endpoint=/version)"
     )
     uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
