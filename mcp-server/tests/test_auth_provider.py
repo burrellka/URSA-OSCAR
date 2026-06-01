@@ -414,6 +414,124 @@ def test_dcr_load_skips_corrupt_store_gracefully(tmp_path):
     assert set(provider.clients.keys()) == {"preregistered-test-id"}
 
 
+@pytest.mark.asyncio
+async def test_refresh_token_survives_access_token_natural_expiry(tmp_path):
+    """1.1.6 regression — when an access token expires naturally,
+    URSA's load_access_token must drop only the access token, NOT the
+    associated refresh token. Per RFC 6749 §6, refresh tokens are
+    designed to outlive their access tokens.
+
+    KAIROS hit this in production at ~1 hour after issuance: their
+    access token expired, URSA's verify_token detected the expiry and
+    called the upstream _revoke_internal which cascades to delete the
+    refresh token from refresh_tokens dict. KAIROS then tried to
+    refresh and got invalid_grant ("refresh token does not exist").
+    """
+    from mcp.server.auth.provider import AccessToken, RefreshToken
+
+    provider = _dcr_provider(tmp_path / "clients.json")
+
+    # Inject an expired access token + a never-expiring refresh token,
+    # wired up via the access↔refresh maps the upstream provider keeps.
+    access_str = "expired-access-token"
+    refresh_str = "still-valid-refresh-token"
+    client_id = "dcr-client-for-refresh-test"
+
+    provider.access_tokens[access_str] = AccessToken(
+        token=access_str,
+        client_id=client_id,
+        scopes=[],
+        expires_at=int(time.time()) - 60,  # expired 1 minute ago
+    )
+    provider.refresh_tokens[refresh_str] = RefreshToken(
+        token=refresh_str,
+        client_id=client_id,
+        scopes=[],
+        expires_at=None,  # refresh tokens never expire in this provider
+    )
+    provider._access_to_refresh_map[access_str] = refresh_str
+    provider._refresh_to_access_map[refresh_str] = access_str
+
+    # Call load_access_token, which is the path verify_token takes for
+    # OAuth bearers. Returns None because the access is expired.
+    result = await provider.load_access_token(access_str)
+    assert result is None
+
+    # The expired access token is gone from the access store.
+    assert access_str not in provider.access_tokens
+
+    # CRITICAL: the refresh token must still be present. Without this,
+    # /token grant_type=refresh_token would return invalid_grant.
+    assert refresh_str in provider.refresh_tokens, (
+        "Refresh token must outlive its associated access token per "
+        "RFC 6749 §6. If this fails, the upstream cascade-delete "
+        "behavior leaked through (1.1.6 regression)."
+    )
+
+    # Map cleanup: the now-dangling access→refresh entry is gone, and
+    # the refresh→access back-reference (which pointed to the dead
+    # access token) is also cleared. The refresh token entry itself
+    # stays alive for the /token exchange.
+    assert access_str not in provider._access_to_refresh_map
+    assert refresh_str not in provider._refresh_to_access_map
+
+
+@pytest.mark.asyncio
+async def test_refresh_token_unexpired_access_returns_normally(tmp_path):
+    """1.1.6 — sanity check that the override doesn't break the
+    happy path. A non-expired access token still returns the
+    AccessToken object."""
+    from mcp.server.auth.provider import AccessToken
+
+    provider = _dcr_provider(tmp_path / "clients.json")
+    access_str = "still-valid-access-token"
+    provider.access_tokens[access_str] = AccessToken(
+        token=access_str,
+        client_id="some-client",
+        scopes=[],
+        expires_at=int(time.time()) + 3600,  # valid for 1 more hour
+    )
+
+    result = await provider.load_access_token(access_str)
+    assert result is not None
+    assert result.token == access_str
+
+
+@pytest.mark.asyncio
+async def test_explicit_revocation_still_cascades(tmp_path):
+    """1.1.6 — natural expiry should NOT cascade, but explicit
+    revocation (via revoke_token, the /revoke endpoint, or refresh-
+    token rotation in exchange_refresh_token) still should. This test
+    confirms the override is scoped narrowly: only the
+    load_access_token path is changed.
+    """
+    from mcp.server.auth.provider import AccessToken, RefreshToken
+
+    provider = _dcr_provider(tmp_path / "clients.json")
+    access_str = "revoke-test-access"
+    refresh_str = "revoke-test-refresh"
+    provider.access_tokens[access_str] = AccessToken(
+        token=access_str, client_id="c", scopes=[], expires_at=None,
+    )
+    provider.refresh_tokens[refresh_str] = RefreshToken(
+        token=refresh_str, client_id="c", scopes=[], expires_at=None,
+    )
+    provider._access_to_refresh_map[access_str] = refresh_str
+    provider._refresh_to_access_map[refresh_str] = access_str
+
+    # Explicit revocation of the access token cascades — kills the
+    # refresh too, as the upstream OAuth spec permits and most
+    # implementations choose.
+    provider._revoke_internal(access_token_str=access_str)
+    assert access_str not in provider.access_tokens
+    assert refresh_str not in provider.refresh_tokens, (
+        "Explicit revocation should still cascade to the refresh "
+        "token. If this fails, the override accidentally changed "
+        "_revoke_internal's behavior, which would break the /revoke "
+        "endpoint and refresh-token rotation."
+    )
+
+
 def test_dcr_load_skips_corrupt_entries_individually(tmp_path):
     """1.1.5 — A single corrupt entry should not lose every other
     persisted client. Each entry is reconstructed independently; failures

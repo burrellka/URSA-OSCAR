@@ -233,6 +233,56 @@ class UrsaOscarOAuthProvider(InMemoryOAuthProvider):
                 client_info.client_id,
             )
 
+    # ----- access-token expiry cleanup (1.1.6) -----
+
+    async def load_access_token(self, token: str) -> AccessToken | None:
+        """Return the AccessToken for a valid bearer, or None if absent
+        or expired.
+
+        Overrides the upstream ``InMemoryOAuthProvider.load_access_token``
+        to fix a refresh-token cascade-delete bug. The upstream
+        implementation calls ``_revoke_internal(access_token_str=...)``
+        on natural expiry, which cascades through ``_access_to_refresh_map``
+        and deletes the associated refresh token from ``self.refresh_tokens``.
+
+        Per RFC 6749 §6, refresh tokens are designed to OUTLIVE their
+        associated access tokens — they exist precisely so a client can
+        obtain a new access token after the short-lived one expires.
+        Cascading deletion breaks that contract. KAIROS hit this in
+        production: client got 401 on its 1-hour-old access token,
+        attempted to refresh, URSA returned ``invalid_grant`` because
+        the refresh token had been auto-deleted by the prior
+        ``verify_token`` call that detected the expiry.
+
+        Fixed behavior: on natural expiry, drop the access token from
+        ``self.access_tokens`` and clean up the now-dangling map entries
+        (the ``_access_to_refresh_map`` entry for this access token, and
+        the ``_refresh_to_access_map`` entry pointing back to it). The
+        refresh token stays in ``self.refresh_tokens`` so a subsequent
+        ``grant_type=refresh_token`` exchange succeeds. Explicit
+        revocation paths (``revoke_token``, the ``/revoke`` endpoint,
+        and ``exchange_refresh_token``'s rotation) all still flow
+        through ``_revoke_internal`` and still cascade as the spec
+        permits for explicit revocation.
+        """
+        token_obj = self.access_tokens.get(token)
+        if token_obj is None:
+            return None
+        if (
+            token_obj.expires_at is not None
+            and token_obj.expires_at < time.time()
+        ):
+            # Drop just this expired access token + the maps that point
+            # at it. The refresh token stays alive for /token to honor.
+            self.access_tokens.pop(token, None)
+            associated_refresh = self._access_to_refresh_map.pop(token, None)
+            if associated_refresh is not None:
+                # Refresh token outlives the access; clear only the
+                # back-reference pointing to the now-dead access token.
+                self._refresh_to_access_map.pop(associated_refresh, None)
+            return None
+        return token_obj
+
     # ----- bearer verification (three kinds) -----
 
     async def verify_token(self, token: str) -> AccessToken | None:

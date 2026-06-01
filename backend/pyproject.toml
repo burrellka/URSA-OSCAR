@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ursa-oscar-backend"
-version = "1.1.5"
+version = "1.1.6"
 description = "URSA-OSCAR backend — analytics + ingestion + FastAPI"
 requires-python = ">=3.11"
 dependencies = [

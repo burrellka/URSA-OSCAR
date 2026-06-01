@@ -4,6 +4,10 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
+**1.1.6** — Refresh-token cascade-delete fix on the MCP server.
+
+When a DCR-registered MCP client's access token expired naturally (default 1-hour lifetime), the upstream FastMCP `InMemoryOAuthProvider`'s cleanup path cascaded through the access↔refresh map and deleted the associated refresh token as well. Per RFC 6749 §6, refresh tokens are designed to outlive their access tokens precisely so the client can request a new access token after the short-lived one expires. The cascade broke that contract: KAIROS would get a 401 on its expired access token, try to refresh, and URSA's `/token` endpoint would return `invalid_grant: "refresh token does not exist"` because the refresh had been auto-deleted by the prior `verify_token` call. `UrsaOscarOAuthProvider.load_access_token` now overrides the upstream behavior: on natural expiry it removes only the access token plus the now-dangling map entries, leaving the refresh token alive in the store. Explicit revocation paths (`/revoke` endpoint, `revoke_token`, and refresh-token rotation in `exchange_refresh_token`) still cascade as the spec permits. Three new regression tests cover the natural-expiry preserve-refresh path, the unexpired-access happy path, and the explicit-revocation still-cascades scope confirmation.
+
 **1.1.5** — RFC 7591 Dynamic Client Registration on the MCP server.
 
 Prior versions had DCR disabled — the only OAuth client the MCP server would authenticate was the pre-registered claude.ai client. Any other MCP client (KAIROS, third-party MCP clients, anything that follows the MCP spec's standard discovery flow) was unable to register its own redirect_uri and got `400 Bad Request` at `/authorize`. The MCP spec requires DCR support for general-purpose servers; URSA now provides it. `POST /register` per RFC 7591: caller supplies `client_name`, `redirect_uris`, `grant_types`, `response_types`, gets back a fresh `client_id` + `client_secret`. Registrations persist to `/data/mcp_oauth_clients.json` and survive container restart. The pre-registered claude.ai client is reconstructed from env vars on every boot (env vars remain the source of truth for that one specific client). Operators upgrading from earlier 1.1.x: the MCP container's `/data` mount must change from `:ro` to `:rw` so the JSON file can be written; both compose templates have been updated. 5 regression tests cover DCR registration, persistence across restart, exclusion of the pre-registered client from disk persistence, and graceful handling of corrupt stores.
@@ -46,7 +50,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.1.2** — Test connection button discipline + refreshed Gemini preset
 - **1.1.3** — Session boundary fix + thinking-mode model support + version self-introspection
 - **1.1.4** — Local-model malformed-tool-call diagnostic
-- **1.1.5** — RFC 7591 Dynamic Client Registration on the MCP server (this release)
+- **1.1.5** — RFC 7591 Dynamic Client Registration on the MCP server
+- **1.1.6** — Refresh-token cascade-delete fix on the MCP server (this release)
 
 ## How to check the running version
 
