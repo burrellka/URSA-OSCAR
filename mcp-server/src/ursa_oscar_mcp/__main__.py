@@ -59,9 +59,28 @@ def main() -> None:
     print(
         "ursa-oscar-mcp: SSE listening on :8000 "
         "(oauth=ready, dcr=ENABLED, pre_registered_client=required, "
-        "static_bearer=enabled, version_endpoint=/version)"
+        "static_bearer=enabled, version_endpoint=/version, "
+        "proxy_headers=trusted)"
     )
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    # 1.1.6 — honor X-Forwarded-Proto from the reverse proxy (Cloudflare
+    # Tunnel, nginx, Traefik, etc.) so Starlette generates redirect URLs
+    # (e.g. trailing-slash 307s on /messages → /messages/) using the
+    # client's original scheme (HTTPS) instead of the proxy-to-container
+    # hop's scheme (HTTP). Without this, a POST to /messages (no slash)
+    # got a 307 → http://..., the client followed HTTPS→HTTP→HTTPS, and
+    # the redirect cascade silently dropped the POST body and downgraded
+    # the method, surfacing as a confusing 405 at the MCP client.
+    # forwarded_allow_ips="*" because the container only ever receives
+    # traffic from a trusted reverse proxy on the docker network — the
+    # operator's network boundary is the host's firewall, not uvicorn's.
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info",
+        proxy_headers=True,
+        forwarded_allow_ips="*",
+    )
 
 
 if __name__ == "__main__":
