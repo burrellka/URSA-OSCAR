@@ -45,38 +45,38 @@ If you're satisfied with OSCAR's desktop workflow, you don't need URSA-OSCAR. If
 
 ## Quick start
 
-**Requirements**
+**New to Docker?** Don't start here. Go to **[INSTALL.md](INSTALL.md)** for a full sequential walkthrough — your platform's guide explains every step, including a "what is Docker?" concepts page if you want to understand what you're doing.
 
-- Docker + docker compose
-- A bind-mountable directory for your CPAP data
-- (Optional) An AI provider API key if you want the AI assistant
-- (Optional) A reverse proxy if exposing beyond LAN
-
-**Run the stack**
+**Familiar with Docker?** Three commands:
 
 ```bash
-# Pull the four images
-docker pull brain40/ursa-oscar-api:1.1.6
-docker pull brain40/ursa-oscar-mcp:1.1.6
-docker pull brain40/ursa-oscar-web:1.1.6
-docker pull brain40/ursa-oscar-watcher:1.1.6
+# Get the compose file
+curl -fsSL https://raw.githubusercontent.com/burrellka/URSA-OSCAR/main/infra/docker-compose.production.yml -o docker-compose.yml
 
-# Clone for the compose file (or copy infra/docker-compose.production.yml directly)
-git clone https://github.com/burrellka/URSA-OSCAR.git
-cd URSA-OSCAR
-cp infra/docker-compose.production.yml docker-compose.yml
-# Edit bind-mount paths and the MCP secrets for your environment
+# Edit the two volumes: blocks (api + watcher) to point at your data folder
+# and CPAP backup folder. The comment block at the top of the file has
+# per-OS path examples (Windows / macOS / Linux).
 
-# Bring up the stack
-docker compose up -d
-
-# Visit http://<host>:5063 — first visit lands on /setup
-# Pick an operator password (>=12 chars, no recovery, store in a password manager)
+docker compose pull && docker compose up -d
 ```
 
-That's the whole onboarding. The api container generates its own Fernet master key, JWT signing secret, and service tokens for the MCP and watcher containers on first boot — no manual key-copying ceremony.
+Then visit `http://localhost:5063`. First visit lands on `/setup` — pick an operator password (≥12 chars, no recovery, store in a password manager). The api container auto-generates its own Fernet master key, JWT signing secret, and service tokens on first boot. No manual key ceremony.
 
-Detailed walkthrough lives in the in-app Help at `/help/first-run-setup` once you've signed in, or browse the source markdown at [frontend/src/help/content/first-run-setup.md](frontend/src/help/content/first-run-setup.md).
+**Per-platform walkthroughs** (sequential, with what-success-looks-like at each step):
+
+| Platform | Guide |
+|---|---|
+| Windows 11 + Docker Desktop | [Docs/install/windows.md](Docs/install/windows.md) |
+| macOS + Docker Desktop | [Docs/install/macos.md](Docs/install/macos.md) |
+| Linux + Docker Engine | [Docs/install/linux.md](Docs/install/linux.md) |
+| TrueNAS SCALE + Dockge | [Docs/install/truenas.md](Docs/install/truenas.md) |
+| Synology / QNAP NAS | [Docs/install/synology.md](Docs/install/synology.md) |
+| Troubleshooting | [Docs/install/troubleshooting.md](Docs/install/troubleshooting.md) |
+| Concepts (what is Docker / a container / a bind mount) | [Docs/install/concepts.md](Docs/install/concepts.md) |
+
+**Optional second-day add-on** — connect claude.ai or Claude Code as an external AI client via MCP + OAuth: [Docs/install/mcp-optional-addon.md](Docs/install/mcp-optional-addon.md). Set it up after the analytics stack is running. The default compose has it commented out; you opt in.
+
+Once URSA-OSCAR is running, the in-app `/help` page has 37 topics covering every feature in detail.
 
 ---
 

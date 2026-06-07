@@ -1,12 +1,45 @@
-version: '3.8'
-
-# Production stack for the homelab. Mirrors APEX's production-compose
-# convention: real paths + hostnames are hardcoded here; only secrets live
-# in Dockge's environment editor and are referenced via ${VAR}.
-
-networks:
-  kairos-net:
-    external: true
+# URSA-OSCAR — public reference compose
+# ==========================================================================
+# This file is designed so a brand-new user can get the stack running with
+# the minimum possible edits. You should only need to change TWO things:
+#
+#   1. The host path where URSA-OSCAR stores its data (the /data bind mount)
+#   2. The host path where your CPAP backup lives (the /cpap-import bind mount)
+#
+# Everything else is set to sensible defaults. Then:
+#
+#   docker compose pull
+#   docker compose up -d
+#   open http://localhost:5063
+#
+# The full step-by-step install for your platform is at:
+#
+#   Windows:        Docs/install/windows.md
+#   Linux:          Docs/install/linux.md
+#   macOS:          Docs/install/macos.md
+#   TrueNAS:        Docs/install/truenas.md
+#   New to Docker?  Docs/install/concepts.md
+#
+# ==========================================================================
+# Bind-mount paths — examples per platform
+# ==========================================================================
+# Linux / TrueNAS / Synology:
+#   - /srv/ursa-oscar/data:/data
+#   - /srv/ursa-oscar/cpap-import:/cpap-import:ro
+#
+# Windows (Docker Desktop with WSL2):
+#   - C:\URSA-OSCAR\data:/data
+#   - C:\Users\<your-username>\Documents\OSCAR_Data:/cpap-import:ro
+#
+# macOS (Docker Desktop):
+#   - /Users/<your-username>/URSA-OSCAR/data:/data
+#   - /Users/<your-username>/Documents/OSCAR_Data:/cpap-import:ro
+#
+# Pick the pattern for your OS and use those paths in the volumes blocks
+# below. The directories don't need to exist beforehand — Docker will
+# create them on first start (except on Windows, where you should create
+# the data directory yourself first to avoid permission issues).
+# ==========================================================================
 
 services:
   ursa-oscar-api:
@@ -16,101 +49,93 @@ services:
       URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
       URSA_OSCAR_IMPORT_WATCH_PATH: /cpap-import
       URSA_OSCAR_EXPORTS_PATH: /data/exports
-      # Phase-2-polish Item 5 (Settings page): mirrored from the MCP
-      # container so the API can show a masked view at
-      # GET /api/v1/system/config and drive POST /api/v1/system/verify-mcp.
+      # The api container can show a Settings page chip for the MCP
+      # container's version + config. These three vars are only needed
+      # if you enable the optional MCP service block at the bottom of
+      # this file. Leave them unset for a pure-analytics install.
       URSA_OSCAR_MCP_INTERNAL_URL: http://ursa-oscar-mcp:8000
-      URSA_OSCAR_MCP_BASE_URL: ${URSA_OSCAR_MCP_BASE_URL:-https://your-public-host.example.com}
-      URSA_OSCAR_MCP_BEARER_TOKEN: ${URSA_OSCAR_MCP_BEARER_TOKEN}
-      URSA_OSCAR_MCP_OAUTH_CLIENT_ID: ${URSA_OSCAR_MCP_OAUTH_CLIENT_ID}
-      URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET}
-      # Phase 6.4 — JWT signing secret. Shared with the MCP container
-      # so it can verify operator-issued JWTs as bearer tokens.
-      # OPTIONAL: if unset, the API auto-generates a per-instance secret
-      # at /data/jwt_secret on first boot (mode 0600). Set explicitly
-      # only when you want to manage rotation yourself.
+      URSA_OSCAR_MCP_BASE_URL: ${URSA_OSCAR_MCP_BASE_URL:-}
+      URSA_OSCAR_MCP_BEARER_TOKEN: ${URSA_OSCAR_MCP_BEARER_TOKEN:-}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_ID: ${URSA_OSCAR_MCP_OAUTH_CLIENT_ID:-}
+      URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET:-}
+      # JWT signing secret. OPTIONAL: if unset, the API auto-generates a
+      # per-instance secret at /data/jwt_secret on first boot (mode 0600).
+      # Set explicitly only if you want to manage rotation yourself.
       URSA_OSCAR_JWT_SECRET: ${URSA_OSCAR_JWT_SECRET:-}
-      # 1.1.6 — version chips are now self-introspecting. The API reads
-      # its own version from packaging metadata, queries the MCP
-      # container's /version endpoint, reads the watcher's
-      # /data/versions/watcher.txt (written at watcher startup), and the
-      # web bundle bakes its version at Vite build time. Operators no
-      # longer keep image tags and display env vars in sync. The previous
-      # URSA_OSCAR_{,MCP_,WEB_,WATCHER_}IMAGE_VERSION env vars are
-      # retained as optional explicit overrides for testing scenarios.
-    networks:
-      - kairos-net
     volumes:
+      # EDIT THESE TWO LINES for your platform (see comment block above).
       - /srv/ursa-oscar/data:/data
       - /srv/ursa-oscar/cpap-import:/cpap-import:ro
     restart: unless-stopped
 
-  ursa-oscar-mcp:
-    image: brain40/ursa-oscar-mcp:1.1.6
-    container_name: ursa-oscar-mcp
-    environment:
-      # MCP reads from the API container over kairos-net (no direct DuckDB
-      # access; DuckDB's cross-process lock model prevents that).
-      URSA_OSCAR_API_URL: http://ursa-oscar-api:8000
-      # Required: bearer token for SSE auth. Missing -> container exits with ERROR.
-      #   python -c "import secrets; print(secrets.token_urlsafe(32))"
-      URSA_OSCAR_MCP_BEARER_TOKEN: ${URSA_OSCAR_MCP_BEARER_TOKEN}
-      # Override in Dockge env editor with your real public hostname.
-      # Wrong value -> claude.ai's OAuth discovery returns wrong endpoint URLs.
-      URSA_OSCAR_MCP_BASE_URL: ${URSA_OSCAR_MCP_BASE_URL:-https://your-public-host.example.com}
-      # Required: pre-registered OAuth client (DCR disabled).
-      #   python -c "import secrets; print(secrets.token_urlsafe(16))"   # ID
-      #   python -c "import secrets; print(secrets.token_urlsafe(32))"   # SECRET
-      URSA_OSCAR_MCP_OAUTH_CLIENT_ID: ${URSA_OSCAR_MCP_OAUTH_CLIENT_ID}
-      URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET}
-      # Phase 6.4 — JWT signing secret shared with the API. Used to
-      # VERIFY operator-issued JWTs presented to /sse as bearer tokens.
-      # OPTIONAL: when unset, the MCP container falls back to
-      # /data/jwt_secret (auto-shared via the mounted data volume).
-      URSA_OSCAR_JWT_SECRET: ${URSA_OSCAR_JWT_SECRET:-}
-      # Phase 6.4.1 — outgoing API bearer token. OPTIONAL override; when
-      # unset, the MCP container auto-reads /data/service_tokens/mcp.jwt
-      # which the API container auto-mints + auto-rotates. Set explicitly
-      # only when you want manual control over the service credential.
-      URSA_OSCAR_MCP_API_TOKEN: ${URSA_OSCAR_MCP_API_TOKEN:-}
-    networks:
-      - kairos-net
-    ports:
-      # Host 8085 (8082 is taken on kairos-net by localrecall) -> container 8000
-      - "8085:8000"
-    volumes:
-      # 1.1.6 — MCP needs /data:rw (was :ro) to persist DCR-registered
-      # OAuth clients to /data/mcp_oauth_clients.json. Same trust model
-      # as the API and watcher containers (both already :rw); the /data
-      # dir is operator-owned on a private LAN volume.
-      - /srv/ursa-oscar/data:/data
-    restart: unless-stopped
-    depends_on:
-      - ursa-oscar-api
-
   ursa-oscar-web:
     image: brain40/ursa-oscar-web:1.1.6
     container_name: ursa-oscar-web
-    networks:
-      - kairos-net
     ports:
+      # Web UI on host port 5063. Change the LEFT side (5063) if that
+      # port is already in use on your machine; the RIGHT side (80)
+      # must stay as 80.
       - "5063:80"
     restart: unless-stopped
+    depends_on:
+      - ursa-oscar-api
 
   ursa-oscar-watcher:
     image: brain40/ursa-oscar-watcher:1.1.6
     container_name: ursa-oscar-watcher
     environment:
-      # Phase 6.4.1 — outgoing API bearer token. OPTIONAL override; when
-      # unset, the watcher auto-reads /data/service_tokens/watcher.jwt
-      # which the API container auto-mints + auto-rotates. Set explicitly
-      # only when you want manual control over the service credential.
+      # Outgoing API bearer token. OPTIONAL override; when unset, the
+      # watcher auto-reads /data/service_tokens/watcher.jwt which the
+      # API container auto-mints + auto-rotates on first boot.
       URSA_OSCAR_WATCHER_TOKEN: ${URSA_OSCAR_WATCHER_TOKEN:-}
-    networks:
-      - kairos-net
     volumes:
+      # EDIT THESE TWO LINES for your platform (see comment block above).
       - /srv/ursa-oscar/data:/data
       - /srv/ursa-oscar/cpap-import:/cpap-import:ro
     restart: unless-stopped
     depends_on:
       - ursa-oscar-api
+
+  # ==========================================================================
+  # OPTIONAL — external AI connector (claude.ai Custom Connector)
+  # ==========================================================================
+  # The four containers above are the analytics stack. They give you:
+  #   - Web UI on http://localhost:5063
+  #   - Daily View + Trends + Reports
+  #   - In-app AI assistant (bring your own API key)
+  #   - Automated CPAP imports from the bind-mounted folder
+  #
+  # The MCP container is a SEPARATE thing: it exposes URSA-OSCAR's data
+  # to external AI clients like claude.ai (via Custom Connector) over a
+  # public URL with OAuth 2.1 + PKCE. You only need this if you want
+  # claude.ai (or Claude Code, or another MCP client) to reach your
+  # URSA-OSCAR data from outside your home network.
+  #
+  # If you only want the in-app AI assistant, you DO NOT need this.
+  # Leave it commented out.
+  #
+  # To enable it: uncomment the entire block below, generate the three
+  # required secrets, and put them in a .env file next to this compose
+  # file (see Docs/install/mcp-optional-addon.md for the walkthrough).
+  # ==========================================================================
+  #
+  # ursa-oscar-mcp:
+  #   image: brain40/ursa-oscar-mcp:1.1.6
+  #   container_name: ursa-oscar-mcp
+  #   environment:
+  #     URSA_OSCAR_API_URL: http://ursa-oscar-api:8000
+  #     URSA_OSCAR_MCP_BEARER_TOKEN: ${URSA_OSCAR_MCP_BEARER_TOKEN}
+  #     URSA_OSCAR_MCP_BASE_URL: ${URSA_OSCAR_MCP_BASE_URL}
+  #     URSA_OSCAR_MCP_OAUTH_CLIENT_ID: ${URSA_OSCAR_MCP_OAUTH_CLIENT_ID}
+  #     URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET}
+  #     URSA_OSCAR_JWT_SECRET: ${URSA_OSCAR_JWT_SECRET:-}
+  #     URSA_OSCAR_MCP_API_TOKEN: ${URSA_OSCAR_MCP_API_TOKEN:-}
+  #   ports:
+  #     - "8085:8000"
+  #   volumes:
+  #     # EDIT THIS LINE for your platform (see comment block at top).
+  #     # MCP needs :rw to persist DCR-registered OAuth clients.
+  #     - /srv/ursa-oscar/data:/data
+  #   restart: unless-stopped
+  #   depends_on:
+  #     - ursa-oscar-api
