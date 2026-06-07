@@ -268,6 +268,75 @@ def test_upload_real_sd_card_backslash_filenames(api_client, real_sd_files):
     assert result["nights_imported"] > 0
 
 
+# -------------------------------------------------------------------------
+# File-count cap regression — 1.1.7
+#
+# Before 1.1.7 the upload endpoint inherited Starlette's default
+# max_files=1000 ceiling, which silently capped any CPAP archive past
+# ~167 nights (≈5.5 months at 6 files/night). Reported by an Apnea Board
+# tester whose multi-year OSCAR archive hit the cap and produced a
+# 400 with ``{"detail":"Too many files. Maximum number of files is 1000."}``.
+# This test sends > 1000 minimal but well-formed files and asserts the
+# endpoint accepts the multipart payload without surfacing the cap.
+# -------------------------------------------------------------------------
+
+
+def _synthesize_many_files(count: int) -> list[tuple[str, bytes]]:
+    """Build *count* multipart files with valid DATALOG-tree paths and
+    distinct names. The contents are not real EDFs — the test only
+    needs the upload-parse + sanitization + tempdir-write path to
+    succeed past the 1000-file boundary; the worker's downstream EDF
+    parse can fail (and will), and we don't poll for terminal status.
+    """
+    out: list[tuple[str, bytes]] = []
+    # Spread across ~20 dates to mimic a multi-year archive structure.
+    nights = max(1, count // 50)
+    for i in range(count):
+        night_idx = i % nights
+        # YYYYMMDD format the importer expects under DATALOG/.
+        date = f"2024{(night_idx % 12) + 1:02d}{((night_idx // 12) % 28) + 1:02d}"
+        seq = i // nights
+        # Rotate suffixes through the allowlist's "harmless companion" set
+        # so per-file sanitization passes. We intentionally avoid .edf
+        # (the importer would try to parse them).
+        suffix = (".crc", ".json", ".jnl")[i % 3]
+        name = f"big_archive/DATALOG/{date}/{date}_{seq:06d}_FIL{suffix}"
+        out.append((name, b"x"))
+    return out
+
+
+def test_upload_accepts_more_than_1000_files(api_client):
+    """REGRESSION (1.1.7) — Starlette's multipart parser defaults to
+    ``max_files=1000``, which caps any CPAP archive past ~167 nights.
+    URSA's /imports/upload now overrides via ``request.form(max_files=...)``
+    so multi-year operators (the headline use case for self-hosted
+    CPAP analytics) aren't silently rejected.
+
+    Pre-1.1.7 behaviour:
+        HTTP 400 — '{"detail":"Too many files. Maximum number of files is 1000."}'
+
+    Post-fix: the endpoint accepts the multipart payload, sanitizes
+    every part, and either enqueues a job (if any usable files) or
+    returns a diagnostic 400 about no-usable-files. EITHER is fine
+    for this regression — the only failure shape we explicitly forbid
+    is the 1000-file Starlette cap.
+    """
+    files = _synthesize_many_files(1100)
+    assert len(files) > 1000
+
+    r = _post_upload(api_client, files)
+
+    # The forbidden response: pre-1.1.7 cap error.
+    assert "Maximum number of files is 1000" not in r.text, (
+        "Starlette's max_files=1000 cap leaked through — the endpoint "
+        "must override via request.form(max_files=...). Got: " + r.text
+    )
+    # Acceptable: either 200 (queued) or a non-cap-related diagnostic.
+    # The synthesized files have no real EDFs, so the downstream importer
+    # will eventually fail the queued job — that's fine; we don't poll.
+    assert r.status_code in (200, 400), r.text
+
+
 def test_upload_real_sd_card_drops_os_junk(api_client, real_sd_files, tmp_path):
     """End-to-end: real SD-card payload must NOT carry the Windows-created
     ``System Volume Information/`` files into the tempdir. The full upload

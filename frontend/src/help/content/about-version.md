@@ -4,6 +4,10 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
+**1.1.7** — Multi-year archive support for the browser folder-upload import.
+
+The browser-side folder-upload endpoint (`POST /api/v1/imports/upload`) was silently capped at 1000 files by Starlette's default multipart `max_files` setting. A ResMed AirSense night produces 4-7 files (event EDF + breath/pressure/sad waveforms + .crc + .json), so the cap topped out at ~167 nights — about 5.5 months of data. Long-time CPAP users with multi-year OSCAR archives hit it as `400 — "Too many files. Maximum number of files is 1000."` before any of URSA's own sanitization could even run. The endpoint now parses multipart manually via `request.form(max_files=100_000)` instead of using FastAPI's `File(...)` declaration, raising the practical ceiling to 100K files (well past any real CPAP archive — 10 years × 365 nights × 7 files = ~25.5K). The per-file 10 MB size cap, the suffix allowlist, the path-traversal sanitizer, and nginx's 5 GB `client_max_body_size` all remain unchanged. One new regression test sends 1100 synthesized files and asserts the cap doesn't fire. Reported by an Apnea Board tester (Darth Copious) during the public-release shake-out — the same testing session that surfaced the install-doc overhaul shipped between 1.1.6 and 1.1.7.
+
 **1.1.6** — Two MCP-server fixes surfaced by KAIROS (a DCR-registered MCP client connected since 1.1.5): refresh-token cascade-delete on access-token expiry, and a 405-via-redirect-cascade artifact on POSTs missing the trailing slash.
 
 When a DCR-registered MCP client's access token expired naturally (default 1-hour lifetime), the upstream FastMCP `InMemoryOAuthProvider`'s cleanup path cascaded through the access↔refresh map and deleted the associated refresh token as well. Per RFC 6749 §6, refresh tokens are designed to outlive their access tokens precisely so the client can request a new access token after the short-lived one expires. The cascade broke that contract: KAIROS would get a 401 on its expired access token, try to refresh, and URSA's `/token` endpoint would return `invalid_grant: "refresh token does not exist"` because the refresh had been auto-deleted by the prior `verify_token` call. `UrsaOscarOAuthProvider.load_access_token` now overrides the upstream behavior: on natural expiry it removes only the access token plus the now-dangling map entries, leaving the refresh token alive in the store. Explicit revocation paths (`/revoke` endpoint, `revoke_token`, and refresh-token rotation in `exchange_refresh_token`) still cascade as the spec permits.
@@ -55,7 +59,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.1.3** — Session boundary fix + thinking-mode model support + version self-introspection
 - **1.1.4** — Local-model malformed-tool-call diagnostic
 - **1.1.5** — RFC 7591 Dynamic Client Registration on the MCP server
-- **1.1.6** — Refresh-token cascade-delete fix on the MCP server (this release)
+- **1.1.6** — Refresh-token cascade-delete fix on the MCP server
+- **1.1.7** — Multi-year archive support for the browser folder-upload import (this release)
 
 ## How to check the running version
 

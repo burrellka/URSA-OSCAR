@@ -43,7 +43,7 @@
 
 services:
   ursa-oscar-api:
-    image: brain40/ursa-oscar-api:1.1.6
+    image: brain40/ursa-oscar-api:1.1.7
     container_name: ursa-oscar-api
     environment:
       URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
@@ -69,7 +69,7 @@ services:
     restart: unless-stopped
 
   ursa-oscar-web:
-    image: brain40/ursa-oscar-web:1.1.6
+    image: brain40/ursa-oscar-web:1.1.7
     container_name: ursa-oscar-web
     ports:
       # Web UI on host port 5063. Change the LEFT side (5063) if that
@@ -81,7 +81,7 @@ services:
       - ursa-oscar-api
 
   ursa-oscar-watcher:
-    image: brain40/ursa-oscar-watcher:1.1.6
+    image: brain40/ursa-oscar-watcher:1.1.7
     container_name: ursa-oscar-watcher
     environment:
       # Outgoing API bearer token. OPTIONAL override; when unset, the
@@ -120,7 +120,7 @@ services:
   # ==========================================================================
   #
   # ursa-oscar-mcp:
-  #   image: brain40/ursa-oscar-mcp:1.1.6
+  #   image: brain40/ursa-oscar-mcp:1.1.7
   #   container_name: ursa-oscar-mcp
   #   environment:
   #     URSA_OSCAR_API_URL: http://ursa-oscar-api:8000

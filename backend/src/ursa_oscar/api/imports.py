@@ -14,8 +14,9 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile  # noqa: F401  (File kept for back-compat; current upload endpoint reads form manually)
 from pydantic import BaseModel, Field
+from starlette.datastructures import UploadFile as _StarletteUploadFile
 
 from ..ingestion.airsense11_layout import locate_import_root
 from ..ingestion.importer import import_path  # noqa: F401  (kept for back-compat test imports)
@@ -58,6 +59,17 @@ _OS_JUNK_SEGMENTS = frozenset(s.lower() for s in {
 # typically 1-3 MB. 10 MB gives headroom without enabling abuse.
 _MAX_FILE_SIZE_MB = 10
 _MAX_FILE_SIZE_BYTES = _MAX_FILE_SIZE_MB * 1024 * 1024
+
+# 1.1.7 — Multi-year CPAP archives blow past Starlette's default
+# max_files=1000 cap. A ResMed AirSense night produces ~5-7 files
+# (event EDF + breath/pressure/sad waveforms + .crc + .json),
+# so 1000 caps a card at ~167 nights (5.5 months). Long-time CPAP
+# users (e.g. the Apnea Board tester who first surfaced this) have
+# 1-5+ years of nightly data — 2,200 to 11,000 files. Raise to 100K.
+# The per-file 10 MB cap, the suffix allowlist, and nginx's 5 GB
+# client_max_body_size remain the meaningful safety guards.
+_UPLOAD_MAX_FILES = 100_000
+_UPLOAD_MAX_FIELDS = 100_000
 
 
 class ImportRequest(BaseModel):
@@ -142,7 +154,6 @@ def get_import_job(job_id: int, request: Request) -> ImportJob:
 @router.post("/imports/upload", response_model=ImportJob)
 async def upload_folder_and_import(
     request: Request,
-    files: list[UploadFile] = File(...),
     force: bool = False,
 ) -> ImportJob:
     """Phase 3 Item 2 (refactored for Phase 4 Ticket 2) — browser-side
@@ -165,6 +176,15 @@ async def upload_folder_and_import(
         sanitization is cheap and surfacing the diagnostic in the
         original request keeps the operator UX tight.
 
+    1.1.7 — we parse the multipart form manually via
+    ``request.form(max_files=_UPLOAD_MAX_FILES)`` instead of declaring
+    ``files: list[UploadFile] = File(...)``. The FastAPI ``File(...)``
+    binding pipes through ``Request.form()`` with Starlette's default
+    ``max_files=1000``, which silently caps any CPAP archive past ~167
+    nights. Manual parsing lets us override the cap explicitly while
+    keeping the rest of the endpoint behavior identical (same per-file
+    size guard, same sanitization, same diagnostic 400 shape).
+
     Security / sanity guards (unchanged):
       - Per-file size cap (10 MB).
       - Suffix allowlist (.edf, .crc, .json, .jnl, .tgt, .dat).
@@ -173,6 +193,25 @@ async def upload_folder_and_import(
       - Diagnostic 400 with per-reason counts + sample raw filenames.
     """
     db = request.app.state.db
+
+    # Parse multipart with the raised cap. Catch Starlette's
+    # MultiPartException explicitly so the 400 carries a meaningful
+    # body rather than the generic 500 FastAPI would otherwise emit.
+    try:
+        form = await request.form(
+            max_files=_UPLOAD_MAX_FILES,
+            max_fields=_UPLOAD_MAX_FIELDS,
+        )
+    except Exception as exc:  # noqa: BLE001 — Starlette raises MultiPartException, but the symbol path varies across versions
+        logger.warning("upload_folder_and_import: multipart parse failed: %s", exc)
+        raise HTTPException(status_code=400, detail=f"Upload parse error: {exc}") from exc
+
+    files = [v for _k, v in form.multi_items() if isinstance(v, _StarletteUploadFile)]
+    if not files:
+        raise HTTPException(
+            status_code=400,
+            detail="No files in upload. Pick the SD card's root folder or a DATALOG subdirectory.",
+        )
 
     tempdir = Path(tempfile.gettempdir()) / f"ursa-upload-{uuid.uuid4().hex[:8]}"
     tempdir.mkdir(parents=True, exist_ok=True)
