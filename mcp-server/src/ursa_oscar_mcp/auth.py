@@ -316,14 +316,38 @@ class UrsaOscarOAuthProvider(InMemoryOAuthProvider):
         return await super().verify_token(token)
 
 
+_MCP_NOT_CONFIGURED_BANNER = (
+    "\n"
+    "============================================================\n"
+    "MCP CONTAINER IS NOT CONFIGURED\n"
+    "============================================================\n"
+    "\n"
+    "If you DON'T want the external AI connector (claude.ai Custom\n"
+    "Connector, Claude Code, etc.), this container shouldn't be\n"
+    "running at all. To stop the restart loop:\n"
+    "\n"
+    "  1. Open your docker-compose.yml\n"
+    "  2. Find the 'ursa-oscar-mcp:' service block\n"
+    "  3. Either DELETE it, or comment out every line in it\n"
+    "  4. Run: docker compose up -d --remove-orphans\n"
+    "\n"
+    "The web container, api container, and watcher container do\n"
+    "NOT need MCP to function. The in-app AI assistant on the web\n"
+    "UI works without it. Most operators don't need this container.\n"
+    "\n"
+    "If you DO want the external AI connector, the setup guide is:\n"
+    "  https://github.com/burrellka/URSA-OSCAR/blob/main/Docs/install/mcp-optional-addon.md\n"
+    "\n"
+    "Missing env var: {missing}\n"
+    "============================================================\n"
+    "\n"
+)
+
+
 def _require_static_bearer() -> str:
     token = os.environ.get("URSA_OSCAR_MCP_BEARER_TOKEN", "").strip()
     if not token:
-        sys.stderr.write(
-            "ERROR: URSA_OSCAR_MCP_BEARER_TOKEN must be set.\n"
-            'Generate one with: python -c "import secrets; '
-            "print(secrets.token_urlsafe(32))\"\n"
-        )
+        sys.stderr.write(_MCP_NOT_CONFIGURED_BANNER.format(missing="URSA_OSCAR_MCP_BEARER_TOKEN"))
         sys.exit(1)
     return token
 
@@ -332,31 +356,32 @@ def _require_oauth_client_credentials() -> tuple[str, str]:
     cid = os.environ.get("URSA_OSCAR_MCP_OAUTH_CLIENT_ID", "").strip()
     csec = os.environ.get("URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET", "").strip()
     if not cid or not csec:
-        sys.stderr.write(
-            "ERROR: URSA_OSCAR_MCP_OAUTH_CLIENT_ID and "
-            "URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET must both be set.\n"
-            "These are the credentials for the pre-registered claude.ai "
-            "client. As of 1.1.5, RFC 7591 dynamic client registration is\n"
-            "ALSO enabled, so other MCP clients (KAIROS, etc.) can "
-            "self-register via POST /register. But the pre-registered\n"
-            "client remains the one claude.ai's connector dialog uses.\n"
-            "Generate the env values with:\n"
-            '  python -c "import secrets; print(\'ID=\' + secrets.token_urlsafe(16))"\n'
-            '  python -c "import secrets; print(\'SECRET=\' + secrets.token_urlsafe(32))"\n'
-        )
+        sys.stderr.write(_MCP_NOT_CONFIGURED_BANNER.format(
+            missing="URSA_OSCAR_MCP_OAUTH_CLIENT_ID and URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET",
+        ))
         sys.exit(1)
     return cid, csec
 
 
 def build_auth_provider() -> UrsaOscarOAuthProvider:
-    """Construct the OAuth provider from env. Exits fast on misconfiguration."""
+    """Construct the OAuth provider from env. Exits fast on misconfiguration.
+
+    1.1.8 — friendlier failure mode. When any required env var is
+    missing, we print a clear banner that tells the operator whether
+    they should configure the secrets OR just remove the MCP service
+    from their compose file (the common case for analytics-only users).
+    Prior to 1.1.8 the error message walked them through generating
+    secrets, which is correct for operators who actually want the
+    external AI connector but confusing for the bigger pool of users
+    who don't want it. Most upgrade-from-1.1.5-or-earlier users carry
+    forward a compose file that had MCP active by default; without the
+    new banner they hit a confusing restart loop and reach for the
+    forum to debug. The banner now puts the cheapest fix (comment it
+    out) first.
+    """
     base_url = os.environ.get("URSA_OSCAR_MCP_BASE_URL", "").rstrip("/")
     if not base_url:
-        sys.stderr.write(
-            "ERROR: URSA_OSCAR_MCP_BASE_URL must be set "
-            "(e.g. http://localhost:8082 for dev, "
-            "https://your-public-host.example.com for prod).\n"
-        )
+        sys.stderr.write(_MCP_NOT_CONFIGURED_BANNER.format(missing="URSA_OSCAR_MCP_BASE_URL"))
         sys.exit(1)
     static_bearer = _require_static_bearer()
     pre_id, pre_secret = _require_oauth_client_credentials()

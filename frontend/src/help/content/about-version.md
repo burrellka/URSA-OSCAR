@@ -4,6 +4,10 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
+**1.1.8** — Friendlier MCP misconfiguration handling + unmapped event label diagnostic.
+
+Two defensive changes surfaced by operators upgrading from earlier compose files. First, the MCP container now prints a clear actionable banner on startup when its required env vars are missing, telling the operator the cheapest fix first (comment out or delete the `ursa-oscar-mcp:` service block) before walking through the OAuth-setup path. Operators upgrading from 1.1.4 or earlier carried forward a compose file where the MCP service was active by default; without the new banner they hit a confusing restart loop and reached for the forum to debug. The banner now puts the no-MCP path first and links to the optional-addon guide for users who actually want claude.ai connector support. Second, the EDF parser now emits a one-time WARN log when it encounters an event annotation label that isn't in `EVENT_LABEL_MAP`. The event is still stored (with event_type = raw label, per the existing fallback), but the WARN line in the api logs surfaces the specific label so operators can report it and the map can be extended. Background: firmware variants emit different raw strings for the same clinical event (e.g. "Hypopnea" vs "Hyp" vs other variants), and URSA's map was curated against one specific AirSense 11's output. Until 1.1.8, the symptom of a label mismatch was "the Events page only shows ClearAirway events even though OSCAR shows Hypopnea and RERA" — diagnosable only via screenshot comparison. Now: `docker compose logs ursa-oscar-api` shows the exact unmapped string.
+
 **1.1.7** — Multi-year archive support for the browser folder-upload import.
 
 The browser-side folder-upload endpoint (`POST /api/v1/imports/upload`) was silently capped at 1000 files by Starlette's default multipart `max_files` setting. A ResMed AirSense night produces 4-7 files (event EDF + breath/pressure/sad waveforms + .crc + .json), so the cap topped out at ~167 nights — about 5.5 months of data. Long-time CPAP users with multi-year OSCAR archives hit it as `400 — "Too many files. Maximum number of files is 1000."` before any of URSA's own sanitization could even run. The endpoint now parses multipart manually via `request.form(max_files=100_000)` instead of using FastAPI's `File(...)` declaration, raising the practical ceiling to 100K files (well past any real CPAP archive — 10 years × 365 nights × 7 files = ~25.5K). The per-file 10 MB size cap, the suffix allowlist, the path-traversal sanitizer, and nginx's 5 GB `client_max_body_size` all remain unchanged. One new regression test sends 1100 synthesized files and asserts the cap doesn't fire. Reported by an Apnea Board tester (Darth Copious) during the public-release shake-out — the same testing session that surfaced the install-doc overhaul shipped between 1.1.6 and 1.1.7.
@@ -60,7 +64,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.1.4** — Local-model malformed-tool-call diagnostic
 - **1.1.5** — RFC 7591 Dynamic Client Registration on the MCP server
 - **1.1.6** — Refresh-token cascade-delete fix on the MCP server
-- **1.1.7** — Multi-year archive support for the browser folder-upload import (this release)
+- **1.1.7** — Multi-year archive support for the browser folder-upload import
+- **1.1.8** — Friendlier MCP misconfig handling + unmapped event label diagnostic (this release)
 
 ## How to check the running version
 

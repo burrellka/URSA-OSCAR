@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ursa-oscar-watcher"
-version = "1.1.7"
+version = "1.1.8"
 description = "URSA-OSCAR file-watcher daemon — Phase 4 Ticket 3 / Phase 6.4 auth."
 requires-python = ">=3.11"
 dependencies = [

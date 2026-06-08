@@ -17,12 +17,22 @@ the session_analyzer without timezone gymnastics.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+# 1.1.8 — track which raw labels we've already warned about so the log
+# doesn't repeat once per event for the same unknown label. One WARN
+# per unique raw label per process lifetime. Reset on container restart,
+# which is fine — the point is to surface the label to the operator
+# once so they can report it for a future EVENT_LABEL_MAP addition.
+_UNMAPPED_LABELS_LOGGED: set[str] = set()
 
 
 # --- Event-type normalization ---------------------------------------------
@@ -321,6 +331,20 @@ def _parse_tal_block(blob: bytes, session_start: datetime) -> Iterator[ParsedEve
         if text in NON_EVENT_LABELS or not text:
             continue
 
+        # 1.1.8 — surface unmapped raw labels so operators can report
+        # them. The fallback (event_type = raw text) still happens and
+        # the event still gets stored; we just log it once per process
+        # so the next person hits this with a clear pointer.
+        if text not in EVENT_LABEL_MAP and text not in _UNMAPPED_LABELS_LOGGED:
+            _UNMAPPED_LABELS_LOGGED.add(text)
+            logger.warning(
+                "EDF parser: saw unmapped event label %r. "
+                "Event will be stored with event_type=%r (the raw text). "
+                "The Events page filter chips won't catch it. "
+                "Please report this label so EVENT_LABEL_MAP can be "
+                "extended (github.com/burrellka/URSA-OSCAR/issues).",
+                text, text,
+            )
         yield ParsedEvent(
             timestamp=session_start + timedelta(seconds=onset),
             raw_label=text,

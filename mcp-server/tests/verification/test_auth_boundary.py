@@ -55,24 +55,42 @@ def app():
     return server.mcp.http_app(transport="sse")
 
 
-def test_discovery_reachable_no_registration_endpoint(app):
+def test_discovery_reachable_advertises_registration_endpoint(app):
+    """1.1.5 — DCR (RFC 7591) is enabled. Discovery must advertise
+    /register so general-purpose MCP clients (KAIROS, etc.) can
+    self-register their redirect_uri. The pre-registered claude.ai
+    client remains the env-var-sourced one for backward compat.
+    """
     with TestClient(app) as c:
         r = c.get("/.well-known/oauth-authorization-server")
         assert r.status_code == 200
         body = r.json()
         assert "authorization_endpoint" in body
         assert "token_endpoint" in body
-        assert "registration_endpoint" not in body, (
-            "registration_endpoint should be absent — DCR is disabled per ADR-002"
+        assert "registration_endpoint" in body, (
+            "registration_endpoint MUST be advertised — DCR enabled in 1.1.5"
         )
 
 
-def test_dcr_disabled_register_rejected(app):
+def test_dcr_register_accepts_well_formed_request(app):
+    """1.1.5 — RFC 7591 DCR is live. A well-formed POST /register
+    with redirect_uris should succeed and return a fresh
+    client_id + client_secret pair.
+    """
     with TestClient(app) as c:
-        r = c.post("/register", json={"redirect_uris": ["https://x/cb"]})
-        assert r.status_code not in (200, 201), (
-            f"POST /register returned {r.status_code} — DCR should reject"
+        r = c.post("/register", json={
+            "client_name": "auth-boundary-test",
+            "redirect_uris": ["https://example.test/cb"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        })
+        assert r.status_code in (200, 201), (
+            f"POST /register returned {r.status_code} — should accept "
+            f"DCR registrations as of 1.1.5. Body: {r.text}"
         )
+        body = r.json()
+        assert "client_id" in body and body["client_id"]
+        assert "client_secret" in body and body["client_secret"]
 
 
 def test_messages_requires_bearer_with_resource_metadata_hint(app):

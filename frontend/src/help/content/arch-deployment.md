@@ -91,7 +91,7 @@ Two compose files ship in the repository's `infra/` directory:
 - `docker-compose.yml` — dev-flavored, uses env vars for image versions and host paths
 - `docker-compose.production.yml` — pinned to specific image versions and TrueNAS paths
 
-Operators typically take `docker-compose.production.yml` as the starting point and edit the bind-mount paths + tunnel hostname to match their setup. The image tags are pinned (currently 1.1.7); pulling a new release means editing the file to bump the tags.
+Operators typically take `docker-compose.production.yml` as the starting point and edit the bind-mount paths + tunnel hostname to match their setup. The image tags are pinned (currently 1.1.8); pulling a new release means editing the file to bump the tags.
 
 ## Required environment variables
 
