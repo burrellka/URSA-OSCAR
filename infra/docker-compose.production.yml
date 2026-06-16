@@ -43,7 +43,7 @@
 
 services:
   ursa-oscar-api:
-    image: brain40/ursa-oscar-api:1.1.8
+    image: brain40/ursa-oscar-api:1.1.9
     container_name: ursa-oscar-api
     environment:
       URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
@@ -69,7 +69,7 @@ services:
     restart: unless-stopped
 
   ursa-oscar-web:
-    image: brain40/ursa-oscar-web:1.1.8
+    image: brain40/ursa-oscar-web:1.1.9
     container_name: ursa-oscar-web
     ports:
       # Web UI on host port 5063. Change the LEFT side (5063) if that
@@ -81,7 +81,7 @@ services:
       - ursa-oscar-api
 
   ursa-oscar-watcher:
-    image: brain40/ursa-oscar-watcher:1.1.8
+    image: brain40/ursa-oscar-watcher:1.1.9
     container_name: ursa-oscar-watcher
     environment:
       # Outgoing API bearer token. OPTIONAL override; when unset, the
@@ -120,7 +120,7 @@ services:
   # ==========================================================================
   #
   # ursa-oscar-mcp:
-  #   image: brain40/ursa-oscar-mcp:1.1.8
+  #   image: brain40/ursa-oscar-mcp:1.1.9
   #   container_name: ursa-oscar-mcp
   #   environment:
   #     URSA_OSCAR_API_URL: http://ursa-oscar-api:8000
@@ -130,6 +130,17 @@ services:
   #     URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET: ${URSA_OSCAR_MCP_OAUTH_CLIENT_SECRET}
   #     URSA_OSCAR_JWT_SECRET: ${URSA_OSCAR_JWT_SECRET:-}
   #     URSA_OSCAR_MCP_API_TOKEN: ${URSA_OSCAR_MCP_API_TOKEN:-}
+  #     # 1.1.9 SECURITY — DCR is now off by default. Leave unset unless
+  #     # your MCP URL is behind edge auth (e.g. Cloudflare Access). With
+  #     # DCR off, anyone reaching /register gets a 404; only the pre-
+  #     # registered claude.ai client (gated by the client_secret you set
+  #     # above) can complete the OAuth flow.
+  #     # URSA_OSCAR_MCP_DCR: "true"
+  #     # 1.1.9 — allow additional redirect URIs on the pre-registered
+  #     # client. Lets non-claude.ai MCP clients (KAIROS, etc.) connect
+  #     # via the shared client_secret without needing DCR.
+  #     # Comma-separated list of full callback URLs.
+  #     URSA_OSCAR_MCP_EXTRA_REDIRECT_URIS: ${URSA_OSCAR_MCP_EXTRA_REDIRECT_URIS:-}
   #   ports:
   #     - "8085:8000"
   #   volumes:

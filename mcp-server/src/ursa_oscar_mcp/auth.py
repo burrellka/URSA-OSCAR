@@ -81,6 +81,44 @@ CLAUDE_AI_CALLBACK = "https://claude.ai/api/mcp/auth_callback"
 DEFAULT_CLIENT_STORE_PATH = Path("/data/mcp_oauth_clients.json")
 
 
+# 1.1.9 SECURITY — DCR is now off by default.
+#
+# The upstream fastmcp.InMemoryOAuthProvider's authorize() method
+# auto-approves with no human-consent step (it says so in the docstring:
+# "Simulates user authorization and generates an authorization code").
+# We extend that class but never override authorize(), so URSA inherits
+# the auto-approve behavior.
+#
+# Combined with DCR enabled, this means any caller who can reach the
+# public MCP URL can POST /register, then immediately complete the
+# OAuth dance with no real authentication, and pull data via the
+# resulting bearer token. The client_secret is the only effective
+# gate; DCR removes it because attackers self-register their own
+# client and secret.
+#
+# Fix: DCR is opt-in via URSA_OSCAR_MCP_DCR. Default is OFF — the
+# pre-registered claude.ai client is the only registered client, and
+# its redirect_uri allowlist (CLAUDE_AI_CALLBACK + any extras the
+# operator added via URSA_OSCAR_MCP_EXTRA_REDIRECT_URIS) controls who
+# can complete the flow even if the client_secret leaks.
+#
+# To re-enable DCR (only safe behind Cloudflare Access / similar):
+#   URSA_OSCAR_MCP_DCR=true
+#
+# To allow non-claude.ai clients (KAIROS etc.) to connect via the
+# pre-registered client + shared secret, allowlist their redirect:
+#   URSA_OSCAR_MCP_EXTRA_REDIRECT_URIS=https://kairos.example.com/callback
+# (comma-separate multiple).
+DCR_ENABLED = os.environ.get("URSA_OSCAR_MCP_DCR", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+EXTRA_REDIRECT_URIS = [
+    u.strip()
+    for u in os.environ.get("URSA_OSCAR_MCP_EXTRA_REDIRECT_URIS", "").split(",")
+    if u.strip()
+]
+
+
 class UrsaOscarOAuthProvider(InMemoryOAuthProvider):
     """InMemoryOAuthProvider + static-bearer + operator-JWT fallbacks in
     verify_token, plus RFC 7591 dynamic client registration with disk
@@ -129,10 +167,20 @@ class UrsaOscarOAuthProvider(InMemoryOAuthProvider):
         # Guards the JSON file write. RLock so the same thread can nest
         # save → load if we ever need that.
         self._store_lock = threading.RLock()
-        # Load any persisted DCR registrations into self.clients. Safe to
-        # call before preregistered_client_id is set; pre-registered
-        # additions go in after this.
-        self._load_persisted_clients()
+        # 1.1.9 SECURITY — only load persisted DCR clients when DCR is
+        # actually enabled. When operators upgrade with DCR turned off
+        # (the new default), any client that self-registered during the
+        # 1.1.5-through-1.1.8 open window stays dead — its persisted
+        # entry is ignored on boot. Operators can also `rm` the JSON
+        # store on the volume to remove the file entirely.
+        if DCR_ENABLED:
+            self._load_persisted_clients()
+        else:
+            logger.info(
+                "DCR is disabled (URSA_OSCAR_MCP_DCR unset/false). "
+                "Skipping persisted-client reload; only the env-driven "
+                "pre-registered client will be active."
+            )
 
     # ----- DCR persistence -----
 
@@ -174,7 +222,13 @@ class UrsaOscarOAuthProvider(InMemoryOAuthProvider):
         Excludes the pre-registered claude.ai client (reconstructed from
         env vars). Uses tmpfile + rename so a partial write cannot leave
         the JSON corrupt. Best-effort 0600 on POSIX.
+
+        1.1.9 SECURITY — short-circuits when DCR is disabled so even an
+        in-process register_client call (which shouldn't fire when DCR
+        is off, but belt-and-suspenders) can't seed the disk store.
         """
+        if not DCR_ENABLED:
+            return
         # Snapshot under the lock so a concurrent register_client doesn't
         # race the dict iteration.
         with self._store_lock:
@@ -390,34 +444,47 @@ def build_auth_provider() -> UrsaOscarOAuthProvider:
     # work (backward-compat with 0.10.x).
     jwt_secret = resolve_jwt_secret()
 
-    # 1.1.5 — DCR (RFC 7591) is now enabled. Any MCP client can POST
-    # to /register with its own redirect_uris and receive a fresh
-    # client_id + client_secret. Registrations persist to
-    # /data/mcp_oauth_clients.json so they survive container restart.
-    # Prior single-client behavior was broken for non-claude.ai MCP
-    # clients (e.g. KAIROS) which the MCP spec requires URSA to
-    # accept.
+    # 1.1.9 SECURITY — DCR is now off by default. See the module-level
+    # DCR_ENABLED comment for the rationale. With DCR off:
+    #   - /register returns 404
+    #   - OAuth discovery does NOT advertise registration_endpoint
+    #   - The pre-registered claude.ai client is the only registered
+    #     client; its redirect allowlist (CLAUDE_AI_CALLBACK +
+    #     EXTRA_REDIRECT_URIS) gates which callbacks can complete the
+    #     flow even if client_secret leaks
+    # Operators opt in via URSA_OSCAR_MCP_DCR=true (only safe behind
+    # Cloudflare Access or equivalent edge auth).
     provider = UrsaOscarOAuthProvider(
         base_url=base_url,
         static_bearer_token=static_bearer,
         jwt_secret=jwt_secret,
         client_registration_options=ClientRegistrationOptions(
-            enabled=True,
-            valid_scopes=None,    # accept any requested scope
+            enabled=DCR_ENABLED,
+            valid_scopes=None,
             default_scopes=None,
         ),
     )
 
-    # Pre-register the claude.ai client. This entry is reconstructed
-    # from env vars on every boot (so an operator can rotate the
-    # secret by changing the env and restarting). It is INTENTIONALLY
-    # excluded from the persisted client store; the env vars are the
-    # source of truth for this one specific client.
+    # Pre-register the claude.ai client. Reconstructed from env vars
+    # on every boot. 1.1.9 — the redirect_uris allowlist now includes
+    # any extras the operator added via URSA_OSCAR_MCP_EXTRA_REDIRECT_URIS
+    # so non-claude.ai MCP clients (KAIROS, etc.) can connect via the
+    # shared client_secret + their own callback, instead of needing
+    # DCR to self-register.
+    allowed_redirects: list[AnyUrl] = [AnyUrl(CLAUDE_AI_CALLBACK)]
+    for u in EXTRA_REDIRECT_URIS:
+        try:
+            allowed_redirects.append(AnyUrl(u))
+        except Exception as e:
+            logger.warning(
+                "URSA_OSCAR_MCP_EXTRA_REDIRECT_URIS: skipping invalid "
+                "URL %r (%s)", u, e,
+            )
     provider.clients[pre_id] = OAuthClientInformationFull(
         client_id=pre_id,
         client_secret=pre_secret,
         client_id_issued_at=int(time.time()),
-        redirect_uris=[AnyUrl(CLAUDE_AI_CALLBACK)],
+        redirect_uris=allowed_redirects,
         grant_types=["authorization_code", "refresh_token"],
         response_types=["code"],
         token_endpoint_auth_method="client_secret_post",
@@ -425,8 +492,13 @@ def build_auth_provider() -> UrsaOscarOAuthProvider:
     )
     provider.preregistered_client_id = pre_id
     logger.info(
-        "Pre-registered claude.ai client client_id=%s redirect_uri=%s "
-        "(DCR enabled; other clients self-register via /register)",
-        pre_id, CLAUDE_AI_CALLBACK,
+        "Pre-registered claude.ai client client_id=%s allowed_redirects=%s "
+        "(DCR=%s; %s)",
+        pre_id,
+        [str(u) for u in allowed_redirects],
+        "ENABLED" if DCR_ENABLED else "DISABLED",
+        "self-registration via /register is OPEN — only safe behind edge auth"
+        if DCR_ENABLED else
+        "only pre-registered client + allowlisted redirects can complete flow",
     )
     return provider

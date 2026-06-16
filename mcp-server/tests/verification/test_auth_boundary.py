@@ -2,11 +2,23 @@
 
 Six assertions per ADR-002 / Decision 10:
 1. /.well-known/oauth-authorization-server reachable; no registration_endpoint
-2. POST /register returns ≠ 200/201 (DCR off)
+2. POST /register returns ≠ 200/201 (DCR off — the 1.1.9 default)
 3. POST /messages/ without bearer returns 401 with resource_metadata=...
 4. Full PKCE auth-code flow with the pre-registered client yields a token
 5. Issued token unblocks /messages/
 6. Static bearer also unblocks /messages/
+
+1.1.9 SECURITY context: prior to 1.1.9, URSA had DCR enabled by default
+(turned on in 1.1.5 to support general-purpose MCP clients like KAIROS).
+Combined with the upstream fastmcp.InMemoryOAuthProvider's auto-approving
+authorize() — which the docstring explicitly says "simulates" user
+authorization — this meant anyone reachable to the public MCP URL could
+POST /register, complete the OAuth flow with no human consent, and pull
+CPAP data. The 1.1.9 fix flips DCR to opt-in (off by default), so this
+file's tests now assert the secure default. To validate DCR-on behavior,
+run a separate test process with URSA_OSCAR_MCP_DCR=true set BEFORE
+import (the server's build_auth_provider runs at module-import time and
+captures DCR_ENABLED into the provider instance).
 
 Runs entirely in-process via Starlette's TestClient — no Docker, no real
 network. Catches OAuth misconfiguration bugs before any deploy.
@@ -55,11 +67,13 @@ def app():
     return server.mcp.http_app(transport="sse")
 
 
-def test_discovery_reachable_advertises_registration_endpoint(app):
-    """1.1.5 — DCR (RFC 7591) is enabled. Discovery must advertise
-    /register so general-purpose MCP clients (KAIROS, etc.) can
-    self-register their redirect_uri. The pre-registered claude.ai
-    client remains the env-var-sourced one for backward compat.
+def test_discovery_does_not_advertise_registration_endpoint(app):
+    """1.1.9 SECURITY — DCR is opt-in (off by default). Discovery MUST
+    NOT advertise registration_endpoint when DCR is disabled, so MCP
+    clients don't think they can self-register and end up with a
+    confusing 404 mid-handshake.
+
+    To verify DCR-on behavior, run with URSA_OSCAR_MCP_DCR=true.
     """
     with TestClient(app) as c:
         r = c.get("/.well-known/oauth-authorization-server")
@@ -67,16 +81,20 @@ def test_discovery_reachable_advertises_registration_endpoint(app):
         body = r.json()
         assert "authorization_endpoint" in body
         assert "token_endpoint" in body
-        assert "registration_endpoint" in body, (
-            "registration_endpoint MUST be advertised — DCR enabled in 1.1.5"
+        assert "registration_endpoint" not in body, (
+            "registration_endpoint MUST be absent when DCR is disabled. "
+            "FastMCP's InMemoryOAuthProvider auto-approves /authorize "
+            "with no human consent (see its source docstring: "
+            "'Simulates user authorization'). DCR + auto-approve means "
+            "anyone reachable to the public URL could self-register "
+            "a client and pull data without authentication."
         )
 
 
-def test_dcr_register_accepts_well_formed_request(app):
-    """1.1.5 — RFC 7591 DCR is live. A well-formed POST /register
-    with redirect_uris should succeed and return a fresh
-    client_id + client_secret pair.
-    """
+def test_dcr_register_rejected_when_disabled(app):
+    """1.1.9 SECURITY — with DCR disabled (the default), POST /register
+    must NOT succeed. The discovery doc doesn't advertise the endpoint;
+    even if a client tries it directly, the server must reject."""
     with TestClient(app) as c:
         r = c.post("/register", json={
             "client_name": "auth-boundary-test",
@@ -84,13 +102,10 @@ def test_dcr_register_accepts_well_formed_request(app):
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
         })
-        assert r.status_code in (200, 201), (
-            f"POST /register returned {r.status_code} — should accept "
-            f"DCR registrations as of 1.1.5. Body: {r.text}"
+        assert r.status_code not in (200, 201), (
+            f"POST /register returned {r.status_code} — must reject "
+            f"DCR when URSA_OSCAR_MCP_DCR is unset/false. Body: {r.text}"
         )
-        body = r.json()
-        assert "client_id" in body and body["client_id"]
-        assert "client_secret" in body and body["client_secret"]
 
 
 def test_messages_requires_bearer_with_resource_metadata_hint(app):

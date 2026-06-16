@@ -32,8 +32,8 @@ Docker is one program (the "Docker daemon") that runs in the background. Anythin
 Practical example:
 
 ```bash
-docker pull brain40/ursa-oscar-api:1.1.8      # Download the recipe (image)
-docker run brain40/ursa-oscar-api:1.1.8       # Cook a meal (container)
+docker pull brain40/ursa-oscar-api:1.1.9      # Download the recipe (image)
+docker run brain40/ursa-oscar-api:1.1.9       # Cook a meal (container)
 ```
 
 When the URSA-OSCAR install guide says "pull the images" — you're downloading the recipes. When it says "start the stack" — you're starting containers from those recipes.

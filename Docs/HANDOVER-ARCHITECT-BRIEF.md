@@ -43,7 +43,9 @@ Alternative: feeder — extend URSA's MCP with Fitbit/Health tools. Single conne
 
 ### 2. Google Health Connect vs. Google Health REST API?
 
-**Need your input.** Connect is Android-native (intended for on-device app-to-app integration). Health REST is the server-side equivalent for cloud / server analytics. For a self-hosted homelab deployment, the REST surface seems right — but I want your confirmation that Health Connect doesn't have a server-side flow I'm missing, and that the OAuth scopes for Health REST cover sleep stages, HRV, HR continuous, weight, activity, SpO2, breathing rate (the parity set with current Fitbit coverage).
+**RESOLVED — not actually a decision (architect note, 2026-06-08).** This was a false binary conflating two unrelated Google products. **Health Connect** is an on-device Android data store — not our target. The Fitbit Web API successor is the **Google Health API**, live now at `https://health.googleapis.com/v4/` — the cloud-to-cloud, account-centric REST surface. Exactly one viable path: migrate to Google Health API v4. No deliberation required. (Note for production, not testing: all Google Health API scopes are classified *Restricted* and require a privacy/security review before non-personal use.)
+
+**What IS a live risk (this replaces the original question):** metric parity is *not* guaranteed at launch. Multiple sources confirm some Fitbit metrics are unavailable from Google v4 today (HR webhooks specifically). This threatens the crown-jewel data — sleep stages and HRV. The real day-0 task is therefore a **parity audit via a standing test harness** that calls both APIs live and value-diffs them. Harness + a code-grounded checklist are already built at `c:\dev\fitbit-web-ui-app\tools\parity-harness\`. We do not write the adapter until the harness shows every metric we ship is present AND value-faithful; until then the old app keeps running.
 
 ### 3. Migration boundary with existing fitbitkb code
 
@@ -80,6 +82,7 @@ URSA chose multi-instance (one CPAP user = one Docker stack) for trust-boundary 
 
 | Day | Output |
 |---|---|
+| **0 (GATE)** | **Secrets + parity gate before any code.** (a) Rotate the old Fitbit refresh token + OAuth client secret — treat as compromised; the Google OAuth migration forces this anyway. (b) Confirm clean-history plan for the new repo: `git init` fresh, never copy the old `.git`; `.gitignore` ships before first commit (already done at `c:\dev\fitbit-web-ui-app\.gitignore`). (c) Stand up the parity harness and capture a first run. Nothing proceeds until these clear. |
 | 1 | Dev audits fitbitkb — "what survives, what changes, what's new" memo |
 | 2-3 | Four-container scaffolding stood up; one URSA-styled chart rendering one real data series |
 | 4-5 | Left-rail nav skeleton with all sections placeholder-rendered; URSA theme + chart conventions locked |

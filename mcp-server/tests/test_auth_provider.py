@@ -246,11 +246,23 @@ def _dcr_provider(client_store_path):
 
     Mirrors the build_auth_provider() flow: enables DCR, sets up a
     pre-registered client_id so persistence-exclusion can be tested.
+
+    1.1.9 NOTE — auth.DCR_ENABLED is read at module import from the
+    URSA_OSCAR_MCP_DCR env var, defaulting to False. The persistence
+    helpers (_load_persisted_clients / _save_persisted_clients)
+    short-circuit when DCR is off. These tests document DCR-on
+    persistence behavior, which is still valid (operators opt in
+    via the env var), so we explicitly flip the module-level flag
+    here. Doesn't affect other test files — already-constructed
+    providers in the verification suite captured the flag at their
+    own import time.
     """
     from mcp.server.auth.settings import ClientRegistrationOptions
     from mcp.shared.auth import OAuthClientInformationFull
     from pydantic import AnyUrl
+    from ursa_oscar_mcp import auth as _auth_mod
     from ursa_oscar_mcp.auth import CLAUDE_AI_CALLBACK
+    _auth_mod.DCR_ENABLED = True
 
     provider = UrsaOscarOAuthProvider(
         base_url="https://test.invalid",
