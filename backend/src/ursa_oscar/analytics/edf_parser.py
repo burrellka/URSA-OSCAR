@@ -112,13 +112,33 @@ class WaveformSignal:
 
 @dataclass(frozen=True)
 class SessionEDFs:
-    """All five EDF flavors for one session, paired by their shared timestamp."""
+    """All five EDF flavors for one session, paired by their shared timestamp.
+
+    1.1.10 — ResMed occasionally records multiple near-adjacent sub-sessions
+    within a single mask-on period (mask-on test at 21:59:39, real sleep
+    starting 22:00:00, etc.). Each sub-session writes its own CSL.edf +
+    EVE.edf at boot, but the BRP/PLD/SA2 waveforms only start once for the
+    whole mask-on period. URSA clusters all of these into one logical
+    session via the 30-second sliding window. The annotation files
+    (CSL/EVE) need to be carried as TUPLES so events from each sub-session
+    can be combined; the waveform files (BRP/PLD/SA2) remain singletons.
+
+    The legacy single-path fields (eve_path / csl_path) are retained as
+    "first in the cluster" pointers for backward compat with any code
+    that hasn't been updated to the tuples. New code should iterate
+    eve_paths / csl_paths.
+    """
     session_timestamp_str: str   # e.g., "20260508_220523" — the filename prefix
-    csl_path: Path | None        # annotation-only; usage tbd, retained for completeness
-    eve_path: Path | None
+    csl_path: Path | None        # 1.1.10: first CSL in cluster (compat shim)
+    eve_path: Path | None        # 1.1.10: first EVE in cluster (compat shim)
     brp_path: Path | None
     pld_path: Path | None
     sa2_path: Path | None
+    # 1.1.10 — all CSLs / EVEs in the cluster, chronological. eve_path /
+    # csl_path point at eve_paths[0] / csl_paths[0] respectively (or None
+    # when the tuple is empty).
+    csl_paths: tuple[Path, ...] = ()
+    eve_paths: tuple[Path, ...] = ()
 
     @property
     def session_start(self) -> datetime:
@@ -476,23 +496,37 @@ def discover_sessions(datalog_dir: Path) -> list[SessionEDFs]:
         # Extend the cluster's trailing edge so a sequence of three files
         # spaced 30s apart still clusters together.
         bucket["_last_ts"] = ts
-        # First-seen wins per kind; the earlier timestamp also wins the
-        # session_id slot.
-        if kind not in bucket:
-            bucket[kind] = path
+        # 1.1.10 — accumulate annotation files (CSL / EVE) in chronological
+        # lists; ResMed can record multiple sub-sessions per mask-on period
+        # and each writes its own CSL+EVE. Waveform files (BRP/PLD/SA2)
+        # remain first-seen-wins because the device writes one continuous
+        # waveform stream per mask-on period.
+        if kind in {"CSL", "EVE"}:
+            key = f"{kind}_list"
+            bucket.setdefault(key, []).append(path)
+        else:
+            if kind not in bucket:
+                bucket[kind] = path
         if ts_str < bucket["_session_id"]:
             bucket["_session_id"] = ts_str
 
     out: list[SessionEDFs] = []
     for bucket in clusters:
+        csl_list = tuple(bucket.get("CSL_list", []))
+        eve_list = tuple(bucket.get("EVE_list", []))
         out.append(
             SessionEDFs(
                 session_timestamp_str=bucket["_session_id"],
-                csl_path=bucket.get("CSL"),
-                eve_path=bucket.get("EVE"),
+                # Legacy single-path fields point at the first file in the
+                # cluster so older callers continue to work. New code
+                # should iterate csl_paths / eve_paths.
+                csl_path=csl_list[0] if csl_list else None,
+                eve_path=eve_list[0] if eve_list else None,
                 brp_path=bucket.get("BRP"),
                 pld_path=bucket.get("PLD"),
                 sa2_path=bucket.get("SA2"),
+                csl_paths=csl_list,
+                eve_paths=eve_list,
             )
         )
     return out

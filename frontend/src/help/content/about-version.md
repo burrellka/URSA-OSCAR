@@ -4,6 +4,14 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
+**1.1.10** — Multi-EVE session clustering fix. Closes a silent-data-loss bug where AHI computed to 0 on nights when ResMed recorded multiple near-adjacent sub-sessions within a single mask-on period.
+
+Symptom: a fresh import of a recent night shows AHI = 0 in the app, even though myResMed shows the real number. The bug was in `discover_sessions` (`backend/src/ursa_oscar/analytics/edf_parser.py`). The 1.1.3 fix correctly clustered EDF files within a 30-second window into a single logical session, but the per-cluster bucket used "first-seen wins per kind" merge logic. When ResMed wrote two CSL+EVE pairs in the same cluster (a 20-second mask-on test at 21:59:39, then the real sleep session starting at 22:00:00, sharing one BRP/PLD/SA2 waveform stream), the cluster kept only the first EVE — typically the near-empty test EVE — and the second EVE's 30+ respiratory events fell silently on the floor. AHI = events / hours, so events ≈ 0 produced AHI ≈ 0 even though the session duration was correct.
+
+The fix carries CSL and EVE files as tuples (`csl_paths`, `eve_paths`) on the `SessionEDFs` dataclass rather than single paths. `events_for_session` iterates over every EVE in the cluster, parses each, and merges into a chronologically-sorted event list. The legacy `eve_path` / `csl_path` single-path fields are retained as compat shims pointing at the first file in the cluster (so any code that hasn't been updated to the tuples still works). Waveform files (BRP/PLD/SA2) remain singletons because the device writes one continuous stream per mask-on period regardless of how many CSL/EVE pairs precede it. Verified end-to-end against the operator's June 21 and June 22 SD-card data — both nights now compute correct AHIs (4.66/hr and 1.32/hr respectively) matching myResMed; both were 0 pre-1.1.10. One new regression test (`tests/unit/test_edf_parser.py::test_discover_sessions_preserves_multiple_eves_in_one_cluster`) constructs the failing 2026-06-22 file layout and asserts both EVEs are retained.
+
+**Operators upgrading from 1.1.5-1.1.9 need to re-import affected nights.** The watcher imports new data only; nights that were imported with the pre-1.1.10 importer have the wrong events stored. After redeploying 1.1.10, force a re-import via Settings → Maintenance → Trigger import (or `docker compose restart ursa-oscar-watcher`). For a wholesale re-import: delete the affected `nightly_summary` and `nightly_events` rows from DuckDB and let the watcher process the SD card folder again. The session-boundary fix in 1.1.3 had the same operational shape.
+
 **1.1.9** — **SECURITY**. Closes an authentication-bypass vulnerability in the MCP container. Operators running the MCP add-on must redeploy and rotate secrets.
 
 The MCP container's OAuth provider extends FastMCP's upstream `InMemoryOAuthProvider`, whose `authorize()` method auto-approves with no human-consent step (the upstream docstring is explicit about this: *"Simulates user authorization and generates an authorization code"*). URSA never overrode `authorize`. Combined with the RFC 7591 Dynamic Client Registration endpoint that 1.1.5 enabled by default, this meant any caller who could reach the public MCP URL could `POST /register` to self-register a client, immediately complete the OAuth dance (no human approval required), receive a valid bearer token, and call all 17 MCP tools against the operator's CPAP data. The `client_secret` on the pre-registered claude.ai client was not an effective gate because attackers could mint their own client + secret via DCR.
@@ -74,7 +82,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.1.6** — Refresh-token cascade-delete fix on the MCP server
 - **1.1.7** — Multi-year archive support for the browser folder-upload import
 - **1.1.8** — Friendlier MCP misconfig handling + unmapped event label diagnostic
-- **1.1.9** — **SECURITY**: closes MCP authentication-bypass; DCR opt-in + redirect allowlist (this release)
+- **1.1.9** — **SECURITY**: closes MCP authentication-bypass; DCR opt-in + redirect allowlist
+- **1.1.10** — Multi-EVE session clustering fix; AHI=0 on multi-mask-on nights (this release)
 
 ## How to check the running version
 

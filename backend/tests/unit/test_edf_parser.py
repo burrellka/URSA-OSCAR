@@ -182,6 +182,66 @@ def test_discover_sessions_treats_real_gaps_as_separate_sessions(tmp_path):
     assert sessions[1].session_timestamp_str == "20260523_233000"
 
 
+def test_discover_sessions_preserves_multiple_eves_in_one_cluster(tmp_path):
+    """1.1.10 regression — when ResMed records multiple sub-sessions
+    within the 30-second clustering window (mask-on test, then real
+    sleep starting ~20s later), each writes its own CSL+EVE. The
+    cluster must keep ALL EVE files (and CSLs) in chronological lists,
+    not first-seen-wins.
+
+    Symptom prior to 1.1.10: the first (often near-empty) EVE was
+    retained and the second EVE — with all the real respiratory
+    events for the night — was silently dropped. AHI in the app
+    computed to 0 while myResMed showed the real number.
+
+    Real failure case the operator caught on the 2026-06-22 SD card.
+    """
+    night = tmp_path / "20260622"
+    night.mkdir()
+    # Two sub-sessions 21 seconds apart (inside the 30s window).
+    # First sub-session has only CSL+EVE; second has CSL+EVE plus the
+    # waveform trio when the device stabilizes a few seconds later.
+    for ts, kind in [
+        ("20260622_222815", "CSL"),
+        ("20260622_222815", "EVE"),
+        ("20260622_222836", "CSL"),
+        ("20260622_222836", "EVE"),
+        ("20260622_222840", "BRP"),
+        ("20260622_222840", "PLD"),
+        ("20260622_222840", "SA2"),
+    ]:
+        (night / f"{ts}_{kind}.edf").write_bytes(b"")
+
+    sessions = discover_sessions(night)
+    assert len(sessions) == 1, (
+        f"Expected 1 clustered session (all files within 30s), "
+        f"got {len(sessions)}."
+    )
+    s = sessions[0]
+    # Both EVEs must be retained in chronological order.
+    assert len(s.eve_paths) == 2, (
+        "REGRESSION: discover_sessions dropped the second EVE in the "
+        "cluster. Pre-1.1.10 'first-seen wins per kind' logic threw "
+        "away the second sub-session's events; the symptom was AHI=0 "
+        "in the app for any night where ResMed split mask-on into "
+        "multiple boot cycles within 30s."
+    )
+    eve_names = [p.name for p in s.eve_paths]
+    assert eve_names == [
+        "20260622_222815_EVE.edf",
+        "20260622_222836_EVE.edf",
+    ], f"EVE files must be chronological; got {eve_names}"
+    # CSLs likewise.
+    assert len(s.csl_paths) == 2
+    # Legacy compat shim: eve_path / csl_path point at the first file.
+    assert s.eve_path is not None and s.eve_path.name == "20260622_222815_EVE.edf"
+    assert s.csl_path is not None and s.csl_path.name == "20260622_222815_CSL.edf"
+    # Waveform files remain singletons (one continuous stream per mask-on).
+    assert s.brp_path is not None and s.brp_path.name.endswith("BRP.edf")
+    assert s.pld_path is not None and s.pld_path.name.endswith("PLD.edf")
+    assert s.sa2_path is not None and s.sa2_path.name.endswith("SA2.edf")
+
+
 def test_arousal_maps_to_rera(fixture_root):
     """5/10 EVE.edf has an Arousal event; should normalize to RERA per AASM."""
     from ursa_oscar.analytics.edf_parser import EVENT_LABEL_MAP

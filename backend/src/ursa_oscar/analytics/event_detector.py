@@ -31,22 +31,41 @@ def events_for_session(session: SessionEDFs, session_id: int) -> list[NightlyEve
 
     `session_id` is the 1-based ordinal of this session within its night.
     Empty / corrupt EVE.edf yields an empty list (not an error).
-    """
-    if session.eve_path is None:
-        return []
 
-    parsed = parse_events(session.eve_path)
+    1.1.10 — iterates over ALL EVE files in the cluster (session.eve_paths).
+    ResMed records each sub-session (mask-on test, real sleep, etc.) into
+    its own EVE.edf, but the 30-second clustering window correctly merges
+    those into one logical session. Prior to 1.1.10, discover_sessions kept
+    only the FIRST EVE in the cluster — typically the empty mask-on-test
+    EVE — and dropped the second EVE's events entirely. Symptom: AHI=0
+    in the app even when myResMed showed events. The single-path
+    session.eve_path field is the legacy compat shim (it points at
+    eve_paths[0] when present); the new tuple is the authoritative
+    source.
+    """
+    eve_paths = session.eve_paths
+    if not eve_paths:
+        # Compat path: very old SessionEDFs constructed without the
+        # tuple (eve_paths defaults to ()) but with eve_path set.
+        if session.eve_path is None:
+            return []
+        eve_paths = (session.eve_path,)
+
     out: list[NightlyEvent] = []
-    for ev in parsed:
-        out.append(
-            NightlyEvent(
-                date=ev.timestamp.date(),
-                timestamp=ev.timestamp,
-                session_id=session_id,
-                event_type=ev.event_type,
-                duration_seconds=ev.duration_seconds,
+    for eve_path in eve_paths:
+        for ev in parse_events(eve_path):
+            out.append(
+                NightlyEvent(
+                    date=ev.timestamp.date(),
+                    timestamp=ev.timestamp,
+                    session_id=session_id,
+                    event_type=ev.event_type,
+                    duration_seconds=ev.duration_seconds,
+                )
             )
-        )
+    # Re-sort by timestamp because we may have interleaved events from
+    # multiple EVE files in chronological order.
+    out.sort(key=lambda e: e.timestamp)
     return out
 
 
