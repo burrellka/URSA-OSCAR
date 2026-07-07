@@ -4,6 +4,16 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
+**1.1.12** — Progressive tool disclosure. Per-turn AI tool tax cut by roughly two-thirds; large context-budget win for local LLM operators.
+
+Prior to 1.1.12, URSA shipped all 15 tool schemas (~5,300 tokens) on every chat turn even when the model only ever called one or two. On a Gemma-4-class local LLM with a modest context window that fixed cost was real latency, not just cost. The 1.1.12 architecture — lifted from KAIROS's progressive-tool-disclosure spec, independently converged with Vitals' equivalent — tiers tools into a small always-on **core** set (get_nightly_summary, get_user_profile, load_tools) and larger **deferred** groups (analytics, trends, advanced-analysis, reports, logs) held behind a compact `AVAILABLE TOOLS` index in the system prompt. The model activates a group on demand via the new `load_tools` discovery tool. For obvious intents ("show me my AHI trend"), a cheap deterministic lexical pre-pass activates the matching group BEFORE the first model call so the extra round-trip is avoided entirely. Typical per-turn tool cost drops from ~5,300 tokens to ~1,000-1,500 tokens.
+
+Implementation: new `ai_proxy/tool_index.py` (DeferredCatalog + build_tool_index + resolver), new `ai_proxy/tool_prepass.py` (stopword-tuned keyword matcher, capped at 2 groups per pre-pass), tool metadata registry in `tools.py` (`TOOL_META` + `GROUP_LABELS` + `core_descriptors()` / `deferred_descriptors()` / `descriptors_by_group()`), chat-endpoint wiring in `api/ai.py` (pre-pass runs before adapter.chat; load_tools calls intercepted and used to mutate active_tools before dispatch). Every commit is atomic and revertable: slice 1 (metadata, no behavior change), slice 2 (load_tools + index + chat integration), slice 3 (lexical pre-pass), slice 4 (this doc update + version bump). Test coverage: 84 pass across tool_index + tool_prepass + ai_proxy + help_no_drift.
+
+The `arch-ai-context` Help topic is updated with the new token math, deferred-group table, and revised "where to cut" advice.
+
+Reference: KAIROS `proxy/src/core/tool_index.py` + `tool_prepass.py` (read-only cross-project reference — URSA implements its own version).
+
 **1.1.11** — Operator-tunable AI request timeout + a new Help topic documenting exactly what URSA sends to the model per turn.
 
 Two operator-facing changes for the AI Assistant. First, the HTTP read timeout for LLM streaming requests is now configurable at Settings → AI Assistant → Request timeout. Range 5-1800 seconds. Leave blank to inherit the family default: 300 seconds (5 minutes) for the Local LLM provider preset, 120 seconds (2 minutes) for cloud providers (Claude, OpenAI, Gemini, OpenRouter, Groq, Custom). Local defaults are longer because thinking-mode local models on CPU can spend 90+ seconds on the chain-of-thought before emitting the first content token; cloud APIs stream within seconds and a long wait usually means a real network problem worth surfacing. The Test connection button uses min(30s, operator setting) so the Settings page doesn't hang for 5 minutes against an unreachable endpoint. The `MaskedConfig` response now includes `effective_timeout_seconds` alongside the operator's stored value so the UI can render "300s (default)" placeholder text.
@@ -92,7 +102,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.1.8** — Friendlier MCP misconfig handling + unmapped event label diagnostic
 - **1.1.9** — **SECURITY**: closes MCP authentication-bypass; DCR opt-in + redirect allowlist
 - **1.1.10** — Multi-EVE session clustering fix; AHI=0 on multi-mask-on nights
-- **1.1.11** — Operator-tunable AI request timeout + Help topic documenting model-context contents (this release)
+- **1.1.11** — Operator-tunable AI request timeout + Help topic documenting model-context contents
+- **1.1.12** — Progressive tool disclosure (KAIROS pattern) — cuts per-turn tool tax by ~2/3 (this release)
 
 ## How to check the running version
 

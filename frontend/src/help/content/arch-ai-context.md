@@ -2,7 +2,21 @@
 
 This page explains, exactly and honestly, what data URSA-OSCAR puts into the model's context window when you send a chat message. If you're running a local LLM with a limited context (Gemma-4, Qwen3, DeepSeek-R1, etc.), this is what you need to understand to reason about whether your context budget will fit — and where to trim if it won't.
 
-Nothing described here is secret or hard-coded away from you. Everything on this page is derived from three files in the codebase: `backend/src/ursa_oscar/ai_proxy/prompt.py`, `backend/src/ursa_oscar/ai_proxy/tools.py`, and the two adapter files under `backend/src/ursa_oscar/ai_proxy/providers/`. Read them if you want the byte-level truth; this page is the human-readable summary.
+Nothing described here is secret or hard-coded away from you. Everything on this page is derived from five files in the codebase: `backend/src/ursa_oscar/ai_proxy/prompt.py`, `backend/src/ursa_oscar/ai_proxy/tools.py`, `backend/src/ursa_oscar/ai_proxy/tool_index.py`, `backend/src/ursa_oscar/ai_proxy/tool_prepass.py`, and the two adapter files under `backend/src/ursa_oscar/ai_proxy/providers/`. Read them if you want the byte-level truth; this page is the human-readable summary.
+
+## Progressive tool disclosure (as of 1.1.12)
+
+Prior to 1.1.12, URSA shipped **all 15 tool schemas on every turn** — a fixed ~5,300-token tax against the model's context window regardless of what the user actually asked. From 1.1.12 forward, URSA tiers tools into a small always-on **core** set and larger **deferred** groups the model activates on demand. The per-turn tool tax drops from ~5,300 tokens to ~1,000-1,500 tokens for typical conversations.
+
+Three mechanisms working together:
+
+1. **Core tools** (always in the catalog every turn): `get_nightly_summary`, `get_user_profile`, and `load_tools` — 3 tools, ~1,000 tokens.
+2. **Deferred groups** summarized as a compact `AVAILABLE TOOLS` index injected into the system prompt: one line per group listing member tool names, ~300-500 tokens total (much cheaper than shipping the full schemas). Groups today: `analytics` (5 tools), `trends` (2), `advanced-analysis` (4), `reports` (1), `logs` (1).
+3. **`load_tools`** — a core discovery tool the model calls with either group keys (`groups: ["analytics"]`) or specific names (`names: ["get_ahi_breakdown"]`). URSA splices the requested schemas into the live catalog so they're callable on the next model step.
+
+**Lexical pre-pass**: to avoid burning a round-trip on obvious intents, URSA runs a cheap deterministic keyword match against the user's message BEFORE the first model call. If the pre-pass finds a strong signal ("show me my AHI trend", "correlate pressure with leak"), it pre-activates up to 2 matching groups so the model just uses them. `load_tools` remains the fallback for everything the pre-pass misses.
+
+Pattern lifted from KAIROS's progressive-tool-disclosure spec (see the KAIROS `proxy/src/core/tool_index.py` and `tool_prepass.py` for the sibling implementation). Vitals converged on the same pattern independently.
 
 ## What one chat request contains
 
@@ -41,15 +55,27 @@ Rendered once at chat-session start, then cached for the whole session:
 
 Total for a typical user with a modest profile: **~200-500 tokens** added to the 3,500-token template.
 
-### 3. Tool descriptors (JSON Schema, 15 tools)
+### 3. Tool descriptors + AVAILABLE TOOLS index (1.1.12 progressive disclosure)
 
-Location: `backend/src/ursa_oscar/ai_proxy/tools.py` — the `TOOL_DESCRIPTORS` list.
+Location: `backend/src/ursa_oscar/ai_proxy/tools.py` (`TOOL_DESCRIPTORS`, `TOOL_META`) + `backend/src/ursa_oscar/ai_proxy/tool_index.py` (index render + resolver).
 
-- Size: **~5,300 tokens** at the moment (15 tools × ~350 tokens each including name, description, JSON parameter schema).
-- Sent with **every** request in the conversation, not just the first.
-- Cloud providers (Anthropic, OpenAI) apply prompt caching where the tools block is cached on their end for repeated conversation turns — no cost saving on your local LLM's context window though; the model still has to read the tokens.
+Per-turn size (typical): **~1,000-1,500 tokens** — a huge improvement over the pre-1.1.12 ~5,300 tokens.
 
-The full list of tools: `get_nightly_summary`, `get_ahi_breakdown`, `get_pressure_profile`, `get_leak_profile`, `get_event_distribution_by_hour`, `list_available_nights`, `get_trend`, `compare_periods`, `analyze_correlation`, `analyze_lag_correlation`, `analyze_multivariate_correlation`, `analyze_prediction`, `generate_report`, `get_manual_log_summary`, `get_user_profile`, `get_help_topic`.
+- **Core catalog (always sent)**: 3 tools, ~1,000 tokens
+  - `get_nightly_summary` — the "how was last night" workhorse (grounds most CPAP questions)
+  - `get_user_profile` — clinical context (diagnoses, medications, treatment goals)
+  - `load_tools` — the discovery tool for activating deferred groups
+- **AVAILABLE TOOLS index (system prompt block, always sent)**: ~300-500 tokens for 13 deferred tools across 5 groups. One line per group with the group key + friendly label + comma-separated tool names. Compare to shipping the 13 full schemas (~4,600 tokens): the index is ~10× cheaper.
+- **Additional deferred schemas the model has activated this conversation**: grows as needed. Once a group is activated (via pre-pass OR the model calling `load_tools`), its schemas ride every subsequent turn until the chat panel is closed. Loading a small group (`logs`, `reports`) adds ~300-500 tokens; loading `advanced-analysis` (4 tools with dense schemas) adds ~1,500-2,000 tokens.
+
+**Deferred groups**:
+- `analytics` (5): `get_ahi_breakdown`, `list_available_nights`, `get_event_distribution_by_hour`, `get_pressure_profile`, `get_leak_profile`
+- `trends` (2): `compare_periods`, `get_trend`
+- `advanced-analysis` (4): `analyze_correlation`, `analyze_multivariate_correlation`, `analyze_lag_correlation`, `analyze_prediction`
+- `reports` (1): `generate_report`
+- `logs` (1): `get_manual_log_summary`
+
+Cloud providers (Anthropic, OpenAI) still apply prompt caching where the whole system prompt + tools block is cached on their end for repeated turns — that's a wall-clock and cost savings on their side. Local LLMs don't get that; the tokens are re-read every turn. Progressive disclosure benefits both, but the felt-latency win is much bigger on local.
 
 ### 4. Conversation history
 
@@ -72,26 +98,30 @@ Assistant's chain-of-thought (the `reasoning` content stream from thinking-mode 
 
 ## Total context budget by request number
 
-Assuming a modest profile, standard tool descriptors, and typical assistant reply lengths:
+Assuming a modest profile, 1.1.12's progressive disclosure, and typical assistant reply lengths:
 
 | Turn | Approx. total input tokens sent to the model |
 |---|---|
-| 1st request (fresh chat) | 3,500 (prompt) + 500 (profile) + 5,300 (tools) + 100 (your message) = **~9,400** |
-| 2nd request (after one round-trip) | ~9,400 + 1,000 (assistant's reply) + 100 (your reply) = **~10,500** |
-| 5th request (typical steady-state) | ~13,000-15,000 depending on how many tool calls fired |
-| 10th request with heavy tool use | 20,000-30,000 |
+| 1st request (fresh chat, no pre-pass hit) | 3,500 (prompt) + 500 (profile) + 1,000 (core tools) + 400 (index) + 100 (your message) = **~5,500** |
+| 1st request with pre-pass hit (one group activated) | ~5,500 + ~500 (one group's schemas) = **~6,000** |
+| 2nd request (after one round-trip) | ~5,500 + 1,000 (assistant's reply) + 100 (your reply) = **~6,600** |
+| 5th request (steady-state, `analytics` + `trends` loaded) | ~8,000-10,000 depending on how many tool calls fired |
+| 10th request with all groups loaded + heavy tool use | 15,000-20,000 |
 
-**For an operator running Gemma-4 26B B4 MoE on the homelab** — which typically ships with a 32K or 128K context window depending on the quantization — you have real headroom for casual chats. Extended sessions with multiple tool calls per turn can approach the 32K bound within a dozen turns.
+**Pre-1.1.12 numbers, for comparison**: 1st request was ~9,400 tokens (before progressive disclosure); 10th request was 20,000-30,000. The 1.1.12 architecture roughly cuts the fixed per-turn tax in half for typical conversations and much more for short ones.
+
+**For an operator running Gemma-4 26B B4 MoE on the homelab** — which typically ships with a 32K or 128K context window depending on the quantization — you have generous headroom now. Extended sessions with multiple tool calls per turn no longer approach the 32K bound within a dozen turns; you can chat for much longer before context pressure matters.
 
 ## Where to cut context if you're running a smaller model
 
 In descending order of savings:
 
 1. **Shorten the system prompt.** Delete the sections you don't need — the safety-patterns block, the PDF-report section, the help-system routing section. Each section is ~200-500 tokens. Cutting three or four sections you don't use can drop the base prompt by 1,500-2,000 tokens. Do this via Settings → AI Assistant → Custom system prompt.
-2. **Start fresh conversations.** URSA doesn't limit history length — every turn stays in until you close the chat panel. Start a new chat when a session gets long.
-3. **Ask fewer questions per turn.** Multi-part questions ("what's my trend AND what happened last night AND run a correlation") trigger multiple tool calls in one round, each of which adds a call+result pair to the history.
+2. **Start fresh conversations.** URSA doesn't limit history length — every turn stays in until you close the chat panel. Start a new chat when a session gets long. This also clears any groups the pre-pass or `load_tools` activated during the prior session, so you return to the ~5,500-token baseline.
+3. **Ask fewer questions per turn.** Multi-part questions ("what's my trend AND what happened last night AND run a correlation") trigger multiple tool calls in one round, each of which adds a call+result pair to the history AND typically activates multiple deferred groups at once.
 4. **Prefer summary-level tools over dense ones.** `get_nightly_summary` for one night is 200-500 tokens; `get_trend` over 90 nights can be 2,000+ tokens. Ask for a specific window, not "everything."
-5. **Cut tool descriptors you never use.** Requires a code change (comment out entries in `tools.py`). Not possible from Settings today; if you use only the summary + AHI tools, cutting the other 13 saves ~4,600 tokens per request. If this becomes routine we'll add an operator-configurable subset.
+5. **Be specific in your first message.** The pre-pass activates groups based on keyword hits. A vague opener ("tell me about my sleep") won't activate anything specific — the model has to call `load_tools` explicitly, costing a round-trip. A specific opener ("show me my AHI trend for the last month") lets the pre-pass activate `analytics` + `trends` before the first model call.
+6. **Cut tool descriptors you never use.** Requires a code change (edit `TOOL_META` in `tools.py` to move a tool out of a group or delete its descriptor). If this becomes routine we could add operator-configurable disclosure to Settings.
 
 ## What is NOT in the request
 

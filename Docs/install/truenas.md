@@ -118,7 +118,7 @@ Your original CPAP backup directory is read-only mounted; URSA-OSCAR never write
 When a new URSA-OSCAR release is published:
 
 1. In Dockge, edit the URSA-OSCAR stack
-2. Change the four `image: brain40/ursa-oscar-*:1.1.11` lines to the new version tag
+2. Change the four `image: brain40/ursa-oscar-*:1.1.12` lines to the new version tag
 3. Save and hit **Update**
 
 Dockge runs `docker compose pull && docker compose up -d --force-recreate` for you. Your data persists across the upgrade.
