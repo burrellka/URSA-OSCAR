@@ -324,6 +324,86 @@ def test_tool_descriptors_have_descriptions():
 
 
 # -------------------------------------------------------------------------
+# 1.1.12 — Progressive tool disclosure metadata + accessors.
+# -------------------------------------------------------------------------
+
+
+def test_progressive_disclosure_core_set_is_small():
+    """1.1.12 — Guard against future PRs quietly promoting tools into the
+    core set. Core rides the LLM catalog on every turn; the fixed per-turn
+    tool tax scales linearly with |core|. Two tools today
+    (``get_nightly_summary`` + ``get_user_profile``) is the intentional
+    ceiling. Raising this cap is a real product decision that should
+    require touching the test on purpose."""
+    from ursa_oscar.ai_proxy.tools import core_descriptors, TOOL_META
+    core = core_descriptors()
+    assert len(core) <= 3, (
+        f"Core tool set unexpectedly large: {len(core)} tools. "
+        "Each core tool is a fixed per-turn token tax. Promoting a tool "
+        "into core is a product decision; if this is intentional, raise "
+        "the ceiling here and update arch-ai-context.md's token math."
+    )
+    core_names = [
+        (d["function"]["name"]) for d in core
+    ]
+    assert "get_nightly_summary" in core_names
+    assert "get_user_profile" in core_names
+    for name in core_names:
+        assert TOOL_META[name]["core"] is True
+
+
+def test_progressive_disclosure_every_tool_is_tagged():
+    """1.1.12 — Every entry in TOOL_DESCRIPTORS must have a matching
+    TOOL_META row. Adding a tool without tagging it means the chat loop
+    (once slice 2 lands) won't know whether to ship it on every turn or
+    hold it behind the index."""
+    from ursa_oscar.ai_proxy.tools import TOOL_META
+    for d in TOOL_DESCRIPTORS:
+        name = d["function"]["name"]
+        assert name in TOOL_META, (
+            f"Tool {name!r} is missing from TOOL_META. Add a row with "
+            "`core: bool` and `group: str | None` — see the block at the "
+            "top of ai_proxy/tools.py."
+        )
+
+
+def test_progressive_disclosure_groups_partition_deferred():
+    """1.1.12 — Every deferred tool must land in exactly one group; the
+    ``descriptors_by_group`` accessor must return the same tool exactly
+    once across all groups. Catches typos where a tool's ``group`` doesn't
+    match a GROUP_LABELS entry (would silently drop it into ``misc``)."""
+    from ursa_oscar.ai_proxy.tools import (
+        deferred_descriptors, descriptors_by_group, GROUP_LABELS,
+    )
+    deferred = deferred_descriptors()
+    grouped = descriptors_by_group()
+    all_grouped_names = [
+        d["function"]["name"] for tools in grouped.values() for d in tools
+    ]
+    # Every deferred tool appears somewhere.
+    assert set(all_grouped_names) == {
+        d["function"]["name"] for d in deferred
+    }
+    # No dupes across groups.
+    assert len(all_grouped_names) == len(set(all_grouped_names))
+    # Every non-empty group key must exist in GROUP_LABELS (no drift to
+    # 'misc' for a legitimate group).
+    for key in grouped:
+        assert key in GROUP_LABELS, (
+            f"Group {key!r} isn't in GROUP_LABELS. Either add a label "
+            "there or fix the group name in TOOL_META."
+        )
+
+
+def test_progressive_disclosure_backward_compat_accessor():
+    """1.1.12 slice 1 must not change existing chat behavior. The
+    ``all_descriptors()`` accessor is the compat seam: it returns exactly
+    the same list callers currently get from ``TOOL_DESCRIPTORS``."""
+    from ursa_oscar.ai_proxy.tools import all_descriptors
+    assert all_descriptors() == list(TOOL_DESCRIPTORS)
+
+
+# -------------------------------------------------------------------------
 # Tool executor — needs a running API. Reuse the existing seeded_client
 # fixture from the session-exclusion suite.
 # -------------------------------------------------------------------------

@@ -34,6 +34,62 @@ logger = logging.getLogger(__name__)
 # -------------------------------------------------------------------------
 
 
+# 1.1.12 — Progressive tool disclosure metadata.
+#
+# Every tool below is tagged (via TOOL_META keyed by name) with:
+#   - core:  True  → rides the LLM catalog on EVERY turn. Keep this set
+#                    small (currently 2 tools). Adding a tool here is a
+#                    fixed per-turn tax on every conversation, so measure
+#                    before promoting.
+#   - group: str   → non-core tools group under this label in the compact
+#                    "AVAILABLE TOOLS (inactive)" system-prompt index.
+#                    The model activates a group on demand via load_tools.
+#
+# See frontend/src/help/content/arch-ai-context.md for the token math.
+# See KAIROS's docs/progressive-tool-disclosure-spec.md for the pattern's
+# design rationale (this is a portable adoption of that pattern into
+# URSA's ai_proxy surface).
+#
+# In this slice (1.1.12 slice 1) the metadata exists but is not yet
+# consumed by the chat loop — the chat endpoint still ships the full
+# TOOL_DESCRIPTORS list every turn. Slice 2 wires it up.
+
+TOOL_META: dict[str, dict[str, bool | str | None]] = {
+    # Core tools — always active.
+    "get_nightly_summary":            {"core": True,  "group": None},
+    "get_user_profile":               {"core": True,  "group": None},
+    # Analytics — per-night detail beyond the summary card.
+    "get_ahi_breakdown":              {"core": False, "group": "analytics"},
+    "list_available_nights":          {"core": False, "group": "analytics"},
+    "get_event_distribution_by_hour": {"core": False, "group": "analytics"},
+    "get_pressure_profile":           {"core": False, "group": "analytics"},
+    "get_leak_profile":               {"core": False, "group": "analytics"},
+    # Trends — multi-night patterns.
+    "compare_periods":                {"core": False, "group": "trends"},
+    "get_trend":                      {"core": False, "group": "trends"},
+    # Advanced statistical analysis — expensive schemas + descriptions.
+    "analyze_correlation":            {"core": False, "group": "advanced-analysis"},
+    "analyze_multivariate_correlation": {"core": False, "group": "advanced-analysis"},
+    "analyze_lag_correlation":        {"core": False, "group": "advanced-analysis"},
+    "analyze_prediction":             {"core": False, "group": "advanced-analysis"},
+    # Provider PDF reports.
+    "generate_report":                {"core": False, "group": "reports"},
+    # Operator manual logs (medications, symptoms, etc.).
+    "get_manual_log_summary":         {"core": False, "group": "logs"},
+}
+
+# Group labels for the AVAILABLE TOOLS index. Keys must match `group`
+# values in TOOL_META. Rendered as "GroupLabel [group: key]: ..." in the
+# compact index injected into the system prompt on non-first turns.
+GROUP_LABELS: dict[str, str] = {
+    "analytics":         "Per-night analytics",
+    "trends":            "Multi-night trends",
+    "advanced-analysis": "Statistical analysis",
+    "reports":           "Provider PDF reports",
+    "logs":              "Manual logs",
+}
+
+
 TOOL_DESCRIPTORS: list[dict] = [
     {
         "type": "function",
@@ -534,6 +590,62 @@ TOOL_DESCRIPTORS: list[dict] = [
         },
     },
 ]
+
+
+# -------------------------------------------------------------------------
+# 1.1.12 — Progressive tool disclosure accessors.
+# -------------------------------------------------------------------------
+
+
+def _tool_name(descriptor: dict) -> str:
+    """Extract the LLM tool name from an OpenAI-shape descriptor."""
+    return ((descriptor or {}).get("function") or {}).get("name") or ""
+
+
+def core_descriptors() -> list[dict]:
+    """Tool descriptors that ride the LLM catalog on every turn.
+
+    Currently: ``get_nightly_summary`` (the "how was last night" workhorse)
+    and ``get_user_profile`` (clinical context for grounding every reply).
+    Everything else is deferred behind the AVAILABLE TOOLS index. Slice 2
+    of 1.1.12 adds the ``load_tools`` discovery tool here as well.
+    """
+    return [
+        d for d in TOOL_DESCRIPTORS
+        if TOOL_META.get(_tool_name(d), {}).get("core", False)
+    ]
+
+
+def deferred_descriptors() -> list[dict]:
+    """Non-core tools — held back from the every-turn catalog and instead
+    summarized in the compact AVAILABLE TOOLS index in the system prompt.
+    The model activates them on demand via ``load_tools`` (slice 2)."""
+    return [
+        d for d in TOOL_DESCRIPTORS
+        if not TOOL_META.get(_tool_name(d), {}).get("core", False)
+    ]
+
+
+def descriptors_by_group() -> dict[str, list[dict]]:
+    """Deferred descriptors partitioned by their ``group`` metadata.
+    Returns ``{"analytics": [...], "trends": [...], ...}`` — group order
+    follows GROUP_LABELS' insertion order; unknown-group tools go under
+    a synthesized ``"misc"`` bucket so nothing silently disappears."""
+    out: dict[str, list[dict]] = {k: [] for k in GROUP_LABELS}
+    for d in deferred_descriptors():
+        name = _tool_name(d)
+        group = TOOL_META.get(name, {}).get("group") or "misc"
+        out.setdefault(group, []).append(d)
+    # Prune empty groups so the AVAILABLE TOOLS block doesn't list groups
+    # with zero members.
+    return {k: v for k, v in out.items() if v}
+
+
+def all_descriptors() -> list[dict]:
+    """Backwards-compat accessor: the full flat list. Callers that don't
+    care about progressive disclosure (or that pre-date 1.1.12) can use
+    this and get the same behavior as before the metadata was added."""
+    return list(TOOL_DESCRIPTORS)
 
 
 # -------------------------------------------------------------------------
