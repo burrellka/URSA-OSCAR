@@ -38,6 +38,7 @@ from ..ai_proxy.tool_index import (
     build_tool_index,
     format_load_result,
 )
+from ..ai_proxy.tool_prepass import select_prepass_groups
 from ..ai_proxy.providers.base import AiStreamEvent
 from ..ai_proxy.providers.presets import PRESETS
 from ..ai_proxy.tools import (
@@ -425,6 +426,43 @@ async def chat(req: ChatRequest, request: Request):
     # deferred groups; the mutation is confined to this generator's
     # closure so parallel chat requests don't step on each other.
     active_tools: list[dict] = list(core_descriptors())
+
+    # 1.1.12 slice 3 — Lexical pre-pass. If the user's latest message
+    # clearly signals intent (e.g., "compare AHI over the last week",
+    # "analyze pressure correlation"), pre-activate up to 2 deferred
+    # groups BEFORE the first model call so the model doesn't have to
+    # burn a round-trip on load_tools. Conservative: only strong-signal
+    # matches (keyword hits on group labels, tool names, or descriptions
+    # after stopword-filtering); capped at MAX_PREPASS_GROUPS = 2 so it
+    # can't silently re-introduce the tax slice 2 removed.
+    #
+    # load_tools remains the fallback path for anything the pre-pass
+    # doesn't catch — this is purely an optimization for the obvious cases.
+    latest_user_message = ""
+    for _m in reversed(req.messages):
+        if _m.role == "user":
+            latest_user_message = _m.content or ""
+            break
+    prepass_groups: list[str] = []
+    if latest_user_message and not deferred_catalog.is_empty:
+        prepass_groups = select_prepass_groups(
+            latest_user_message, deferred_catalog,
+        )
+        if prepass_groups:
+            prepass_result = deferred_catalog.resolve(groups=prepass_groups)
+            existing_names = {
+                (d.get("function") or {}).get("name") for d in active_tools
+            }
+            for d in prepass_result.descriptors:
+                nm = (d.get("function") or {}).get("name")
+                if nm and nm not in existing_names:
+                    active_tools.append(d)
+                    existing_names.add(nm)
+            logger.info(
+                "ai/chat: pre-pass activated %d group(s): %s -> %d tool(s)",
+                len(prepass_groups), prepass_groups,
+                len(prepass_result.loaded_names),
+            )
 
     # API base URL for in-process tool execution. The chat endpoint
     # runs inside the API process; we want loopback (don't round-trip
