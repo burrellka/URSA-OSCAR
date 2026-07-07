@@ -73,6 +73,9 @@ class ConfigUpdate(BaseModel):
     routing_mode: str | None = None
     proxy_endpoint_url: str | None = None
     custom_system_prompt: str | None = None
+    # 1.1.11 — HTTP read timeout in seconds. None = use provider-family
+    # default (300s local, 120s others). Range guarded on the store side.
+    timeout_seconds: int | None = None
     api_key: str | None = None
 
 
@@ -90,6 +93,12 @@ class MaskedConfig(BaseModel):
     routing_mode: str
     proxy_endpoint_url: str | None
     custom_system_prompt: str | None
+    # 1.1.11 — operator-tunable per-request HTTP read timeout. None means
+    # "use the family default"; effective_timeout_seconds tells the UI
+    # what the current live default is (so it can render a placeholder
+    # or "current: 300s" hint alongside the input).
+    timeout_seconds: int | None
+    effective_timeout_seconds: int
     api_key_set: bool
     # Per-provider api_key_set map so the Settings UI can show which
     # providers have keys stored without revealing which is selected.
@@ -132,6 +141,11 @@ def get_config(request: Request) -> MaskedConfig:
         keys_set.get(cfg.provider_id, False)
         if cfg.provider_id else False
     )
+    # 1.1.11 — surface the effective timeout so the Settings UI can
+    # show operators what "leave blank" actually resolves to for the
+    # currently-selected provider. Mirrors the build_adapter logic.
+    from ..ai_proxy import _effective_timeout  # local import: avoid cycle at module load
+    effective_to = int(_effective_timeout(cfg.provider_id or "", cfg.timeout_seconds))
     return MaskedConfig(
         enabled=cfg.enabled,
         provider_id=cfg.provider_id,
@@ -140,6 +154,8 @@ def get_config(request: Request) -> MaskedConfig:
         routing_mode=cfg.routing_mode,
         proxy_endpoint_url=cfg.proxy_endpoint_url,
         custom_system_prompt=cfg.custom_system_prompt,
+        timeout_seconds=cfg.timeout_seconds,
+        effective_timeout_seconds=effective_to,
         api_key_set=selected_key_set,
         api_keys_set=keys_set,
     )

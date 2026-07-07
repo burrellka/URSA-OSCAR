@@ -126,12 +126,22 @@ class ProviderAdapter(ABC):
         endpoint: str,
         model: str,
         extra_headers: dict | None = None,
+        timeout_seconds: float | None = None,
         **kwargs: Any,
     ) -> None:
         self.api_key = api_key
         self.endpoint = endpoint
         self.model = model
         self.extra_headers = extra_headers or {}
+        # 1.1.11 — operator-tunable HTTP read timeout for the streaming
+        # chat call. Each concrete adapter consumes this via
+        # ``self.timeout_seconds`` when building its httpx client or
+        # provider SDK client. See config_store.AiProxyConfig for the
+        # provider-family defaults. None here means "adapter picks a
+        # sane default"; build_adapter() populates this explicitly
+        # before construction, so None should only appear in test
+        # setups that instantiate adapters directly.
+        self.timeout_seconds = timeout_seconds
 
     @abstractmethod
     async def chat(

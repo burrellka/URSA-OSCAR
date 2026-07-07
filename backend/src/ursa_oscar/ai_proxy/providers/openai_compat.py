@@ -54,11 +54,20 @@ class OpenAiCompatAdapter(ProviderAdapter):
 
         headers = {"Content-Type": "application/json", **self.extra_headers}
 
-        # 1.1.3 — stream timeout bumped from 120s to 300s for thinking-mode
-        # models (Qwen3, DeepSeek-R1, etc.) which can spend 90+ seconds on
-        # the chain-of-thought before emitting the first content token.
-        # Read timeout is the relevant one; connect/write/pool stay short.
-        timeout = httpx.Timeout(connect=10.0, read=300.0, write=30.0, pool=10.0)
+        # 1.1.3 — stream read timeout was bumped from 120s to 300s for
+        # thinking-mode models (Qwen3, DeepSeek-R1, GPT-OSS, Gemma-4)
+        # which can spend 90+ seconds on the chain-of-thought before
+        # emitting the first content token. Connect / write / pool stay
+        # short because those legs shouldn't ever be slow.
+        # 1.1.11 — operator-tunable via Settings → AI Assistant →
+        # Request timeout. Defaults live in ai_proxy.__init__:
+        # DEFAULT_TIMEOUT_SECONDS_LOCAL / _CLOUD. self.timeout_seconds
+        # is populated by build_adapter; None here would only happen in
+        # tests that skip build_adapter.
+        read_timeout = float(self.timeout_seconds or 300.0)
+        timeout = httpx.Timeout(
+            connect=10.0, read=read_timeout, write=30.0, pool=10.0,
+        )
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 async with client.stream("POST", url, json=body, headers=headers) as resp:
@@ -96,8 +105,13 @@ class OpenAiCompatAdapter(ProviderAdapter):
             "max_tokens": 1,
             "stream": False,
         }
+        # 1.1.11 — Test connection is a 1-token probe; use a short
+        # timeout (30s or the operator's setting, whichever is smaller)
+        # so the Settings-page test button doesn't hang for 5 minutes
+        # against an unreachable endpoint.
+        test_timeout = min(30.0, float(self.timeout_seconds or 30.0))
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=test_timeout) as client:
                 resp = await client.post(url, json=body, headers=headers)
                 if resp.status_code >= 400:
                     return ProviderTestResult(

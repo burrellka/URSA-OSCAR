@@ -54,6 +54,8 @@ import archSingleTenant from './content/arch-single-tenant.md?raw';
 import archNetworkSecurity from './content/arch-network-security.md?raw';
 import archMultiInstance from './content/arch-multi-instance.md?raw';
 import archDeployment from './content/arch-deployment.md?raw';
+// 1.1.11 — what URSA sends to the model per turn (context budget)
+import archAiContext from './content/arch-ai-context.md?raw';
 
 // Troubleshooting
 import troubleshootImport from './content/troubleshoot-import.md?raw';
@@ -307,6 +309,27 @@ export const TOPICS: Topic[] = [
     section: 'Architecture and deployment',
     keywords: ['deployment', 'truenas', 'dockge', 'synology', 'qnap', 'compose'],
     body: archDeployment,
+  },
+  // 1.1.11 — what URSA sends to the model per turn (context budget)
+  {
+    slug: 'arch-ai-context',
+    title: 'What URSA sends to the AI model',
+    section: 'Architecture and deployment',
+    keywords: [
+      'ai',
+      'context',
+      'system prompt',
+      'tools',
+      'tokens',
+      'context window',
+      'local llm',
+      'gemma',
+      'qwen',
+      'deepseek',
+      'context budget',
+      'prompt caching',
+    ],
+    body: archAiContext,
   },
 
   // Troubleshooting (5)

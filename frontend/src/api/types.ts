@@ -337,6 +337,11 @@ export interface AiMaskedConfig {
   routing_mode: string;
   proxy_endpoint_url: string | null;
   custom_system_prompt: string | null;
+  // 1.1.11 — operator's stored request timeout in seconds. null = "use
+  // provider-family default"; effective_timeout_seconds reveals what
+  // that default actually resolves to (300s for local, 120s cloud).
+  timeout_seconds: number | null;
+  effective_timeout_seconds: number;
   api_key_set: boolean;
   api_keys_set: Record<string, boolean>;
 }
@@ -349,6 +354,7 @@ export interface AiConfigPatch {
   routing_mode?: string;
   proxy_endpoint_url?: string | null;
   custom_system_prompt?: string | null;
+  timeout_seconds?: number | null;
   api_key?: string;  // never returned, only sent
 }
 

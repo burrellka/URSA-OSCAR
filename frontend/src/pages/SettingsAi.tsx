@@ -41,6 +41,10 @@ export default function SettingsAi() {
     routing_mode: string;
     proxy_endpoint_url: string;
     custom_system_prompt: string;
+    // 1.1.11 — operator timeout override as a string so we can show the
+    // input empty when None (server-side default). Blank = None → use
+    // family default (300s for local, 120s for cloud).
+    timeout_seconds: string;
     api_key: string;      // empty if not editing
   }>({
     enabled: false,
@@ -50,6 +54,7 @@ export default function SettingsAi() {
     routing_mode: 'direct',
     proxy_endpoint_url: '',
     custom_system_prompt: '',
+    timeout_seconds: '',
     api_key: '',
   });
 
@@ -89,6 +94,11 @@ export default function SettingsAi() {
           // template when no per-provider override exists. Operators
           // see exactly what the AI is using; no invisible defaults.
           custom_system_prompt: cfg.custom_system_prompt || tmpl.template,
+          // 1.1.11 — empty string when the operator hasn't explicitly
+          // set a timeout; effective_timeout_seconds still gets shown
+          // as the placeholder so they know what will actually apply.
+          timeout_seconds:
+            cfg.timeout_seconds != null ? String(cfg.timeout_seconds) : '',
           api_key: '',
         });
       })
@@ -203,6 +213,23 @@ export default function SettingsAi() {
         proxy_endpoint_url: edit.proxy_endpoint_url || null,
         custom_system_prompt: edit.custom_system_prompt || null,
       };
+      // 1.1.11 — timeout: send a number when the field has content,
+      // omit the field entirely when blank so the backend keeps its
+      // current value (empty on both sides = "use default"). Range
+      // guard: 5s-1800s, matching the pydantic constraint. Bad input
+      // is caught client-side so the operator gets a clear message
+      // instead of a 400 from the API.
+      if (edit.timeout_seconds !== '') {
+        const parsed = parseInt(edit.timeout_seconds, 10);
+        if (!Number.isFinite(parsed) || parsed < 5 || parsed > 1800) {
+          throw new Error(
+            'Request timeout must be between 5 and 1800 seconds. '
+            + 'Leave blank to use the provider-family default '
+            + '(300s for local LLMs, 120s for cloud providers).',
+          );
+        }
+        patch.timeout_seconds = parsed;
+      }
       if (edit.api_key) patch.api_key = edit.api_key;
       const updated = await api.patchAiConfig(patch);
       setConfig(updated);
@@ -450,6 +477,34 @@ export default function SettingsAi() {
               )}
             </>
           )}
+
+          {/* 1.1.11 — operator-tunable request timeout. Blank = family
+              default (300s for local LLMs, 120s for cloud). Range
+              5-1800; validated client-side before PATCH so bad input
+              gets a clear inline message instead of a 400 later. */}
+          <div className="field" style={{ marginBottom: '0.75rem' }}>
+            <label>Request timeout (seconds)</label>
+            <input
+              type="number"
+              min={5}
+              max={1800}
+              step={5}
+              value={edit.timeout_seconds}
+              onChange={(e) => setEdit({ ...edit, timeout_seconds: e.target.value })}
+              placeholder={
+                config
+                  ? `${config.effective_timeout_seconds}s (default)`
+                  : ''
+              }
+            />
+            <span className="stat-sub" style={{ color: 'var(--text-muted)' }}>
+              How long URSA waits for the model to start responding before
+              timing out. Leave blank to use the family default (300s for
+              local LLMs, 120s for cloud providers). Raise this if
+              thinking-mode local models on CPU need more time to warm up.
+              Range 5-1800 seconds.
+            </span>
+          </div>
 
           <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginTop: '0.75rem' }}>
             <button

@@ -253,7 +253,7 @@ docker compose pull
 
 ### If it didn't work
 
-- **"image not found" or "manifest unknown"** → You may have an old or mistyped image tag in the compose file. Make sure all four image lines say `:1.1.10` (or whatever version is current; check the [latest release](https://github.com/burrellka/URSA-OSCAR/releases) if unsure).
+- **"image not found" or "manifest unknown"** → You may have an old or mistyped image tag in the compose file. Make sure all four image lines say `:1.1.11` (or whatever version is current; check the [latest release](https://github.com/burrellka/URSA-OSCAR/releases) if unsure).
 - **"too many requests" or "rate limit"** → Docker Hub's anonymous pull rate-limit. Wait 10 minutes and try again, or create a free Docker Hub account and `docker login`.
 - **"500 Internal Server Error"** → Docker Desktop isn't running. Back to step 2.
 
@@ -366,7 +366,7 @@ When a new URSA-OSCAR release is published:
 
 ```powershell
 Set-Location C:\URSA-OSCAR
-# Edit docker-compose.yml — change the four "image: brain40/ursa-oscar-*:1.1.10"
+# Edit docker-compose.yml — change the four "image: brain40/ursa-oscar-*:1.1.11"
 # lines to the new version tag.
 docker compose pull
 docker compose up -d --force-recreate
@@ -398,7 +398,7 @@ Remove-Item -Recurse -Force C:\URSA-OSCAR\data
 That removes the containers and the URSA-OSCAR data folder. Your original CPAP backup folder is untouched (URSA-OSCAR only ever reads from it). To free disk space from the downloaded container images:
 
 ```powershell
-docker image rm brain40/ursa-oscar-api:1.1.10 brain40/ursa-oscar-web:1.1.10 brain40/ursa-oscar-watcher:1.1.10
+docker image rm brain40/ursa-oscar-api:1.1.11 brain40/ursa-oscar-web:1.1.11 brain40/ursa-oscar-watcher:1.1.11
 ```
 
 ---

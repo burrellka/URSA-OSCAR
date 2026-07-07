@@ -41,6 +41,18 @@ class AiProxyConfig(BaseModel):
     # Optional custom system prompt — when None, the default template
     # from prompt.py is used.
     custom_system_prompt: str | None = None
+    # 1.1.11 — operator-tunable HTTP read timeout for LLM streaming
+    # requests, in seconds. When None, the effective timeout is chosen
+    # by build_adapter based on provider_id:
+    #   - Local LLM: 300s (5 minutes) — thinking-mode models on CPU can
+    #     spend several minutes before the first content token.
+    #   - All other providers: 120s (2 minutes) — cloud APIs stream
+    #     within a few seconds of connect; longer waits usually mean
+    #     network trouble worth surfacing rather than hiding.
+    # Range guard: 5s minimum (below that no real completion fits),
+    # 1800s / 30 min ceiling (above that is almost always a config bug
+    # masking a real network hang).
+    timeout_seconds: int | None = Field(default=None, ge=5, le=1800)
     # Forward-compat: extra provider-specific config (e.g., temperature)
     # without bumping the schema. Currently unused.
     extra: dict[str, Any] = Field(default_factory=dict)

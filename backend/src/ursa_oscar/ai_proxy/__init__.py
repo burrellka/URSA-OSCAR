@@ -28,6 +28,27 @@ from .providers.presets import (  # noqa: F401
 )
 
 
+# 1.1.11 — provider-family defaults for the HTTP read timeout on
+# streaming chat calls. Local LLMs get a generous 5-minute window
+# because thinking-mode models (Qwen3, DeepSeek-R1, GPT-OSS, Gemma-4)
+# on CPU can spend several minutes on the chain-of-thought before
+# the first content token. Cloud APIs (Claude, OpenAI, Gemini, etc.)
+# stream within a few seconds of connect; longer waits usually mean
+# a real network problem worth surfacing rather than hiding.
+DEFAULT_TIMEOUT_SECONDS_LOCAL = 300  # 5 minutes
+DEFAULT_TIMEOUT_SECONDS_CLOUD = 120  # 2 minutes
+
+
+def _effective_timeout(provider_id: str, configured: int | None) -> float:
+    """Return the per-request HTTP read timeout in seconds. Operator
+    override wins; otherwise pick the family default."""
+    if configured is not None:
+        return float(configured)
+    if provider_id == "local":
+        return float(DEFAULT_TIMEOUT_SECONDS_LOCAL)
+    return float(DEFAULT_TIMEOUT_SECONDS_CLOUD)
+
+
 def build_adapter(provider_id: str, config_dict: dict, api_key: str | None):
     """Pick the right adapter class for a provider id and wire it with
     the operator's stored config + decrypted API key. Returns ``None``
@@ -45,6 +66,9 @@ def build_adapter(provider_id: str, config_dict: dict, api_key: str | None):
         preset.default_models[0] if preset.default_models else ""
     )
     headers = build_auth_header(preset, api_key)
+    timeout = _effective_timeout(
+        provider_id, config_dict.get("timeout_seconds"),
+    )
 
     cls = ClaudeAdapter if preset.adapter == "claude" else OpenAiCompatAdapter
     return cls(
@@ -52,4 +76,5 @@ def build_adapter(provider_id: str, config_dict: dict, api_key: str | None):
         endpoint=endpoint,
         model=model,
         extra_headers=headers,
+        timeout_seconds=timeout,
     )

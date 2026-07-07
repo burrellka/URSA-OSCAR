@@ -4,6 +4,14 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
+**1.1.11** — Operator-tunable AI request timeout + a new Help topic documenting exactly what URSA sends to the model per turn.
+
+Two operator-facing changes for the AI Assistant. First, the HTTP read timeout for LLM streaming requests is now configurable at Settings → AI Assistant → Request timeout. Range 5-1800 seconds. Leave blank to inherit the family default: 300 seconds (5 minutes) for the Local LLM provider preset, 120 seconds (2 minutes) for cloud providers (Claude, OpenAI, Gemini, OpenRouter, Groq, Custom). Local defaults are longer because thinking-mode local models on CPU can spend 90+ seconds on the chain-of-thought before emitting the first content token; cloud APIs stream within seconds and a long wait usually means a real network problem worth surfacing. The Test connection button uses min(30s, operator setting) so the Settings page doesn't hang for 5 minutes against an unreachable endpoint. The `MaskedConfig` response now includes `effective_timeout_seconds` alongside the operator's stored value so the UI can render "300s (default)" placeholder text.
+
+Second, a new Help topic — *Architecture and deployment → What URSA sends to the AI model* — spells out exactly what data URSA puts into the model's context window on every request. Token accounting for each of the five components (system prompt template ~3,500 tokens, runtime context ~200-500, tool descriptors ~5,300 for the 15 tools, conversation history growing per turn, your new message), where operators can trim if running a small local model, and what URSA explicitly does NOT send. Written for the Gemma-4 / Qwen3 / DeepSeek-R1 local-LLM operator with a fixed context budget who needs to reason about capacity before an extended chat. Content grounded in the actual `prompt.py`, `tools.py`, and adapter source rather than paraphrased.
+
+Also includes the `1.1.11` version bump across all four container images and the `AiProxyConfig` schema extension (`timeout_seconds: int | None`, range-guarded 5-1800). Pydantic validation catches bad input at the API layer; the frontend also validates client-side before PATCH so the operator gets an inline error rather than a 400.
+
 **1.1.10** — Multi-EVE session clustering fix. Closes a silent-data-loss bug where AHI computed to 0 on nights when ResMed recorded multiple near-adjacent sub-sessions within a single mask-on period.
 
 Symptom: a fresh import of a recent night shows AHI = 0 in the app, even though myResMed shows the real number. The bug was in `discover_sessions` (`backend/src/ursa_oscar/analytics/edf_parser.py`). The 1.1.3 fix correctly clustered EDF files within a 30-second window into a single logical session, but the per-cluster bucket used "first-seen wins per kind" merge logic. When ResMed wrote two CSL+EVE pairs in the same cluster (a 20-second mask-on test at 21:59:39, then the real sleep session starting at 22:00:00, sharing one BRP/PLD/SA2 waveform stream), the cluster kept only the first EVE — typically the near-empty test EVE — and the second EVE's 30+ respiratory events fell silently on the floor. AHI = events / hours, so events ≈ 0 produced AHI ≈ 0 even though the session duration was correct.
@@ -83,7 +91,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.1.7** — Multi-year archive support for the browser folder-upload import
 - **1.1.8** — Friendlier MCP misconfig handling + unmapped event label diagnostic
 - **1.1.9** — **SECURITY**: closes MCP authentication-bypass; DCR opt-in + redirect allowlist
-- **1.1.10** — Multi-EVE session clustering fix; AHI=0 on multi-mask-on nights (this release)
+- **1.1.10** — Multi-EVE session clustering fix; AHI=0 on multi-mask-on nights
+- **1.1.11** — Operator-tunable AI request timeout + Help topic documenting model-context contents (this release)
 
 ## How to check the running version
 

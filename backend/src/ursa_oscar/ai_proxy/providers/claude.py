@@ -66,9 +66,14 @@ class ClaudeAdapter(ProviderAdapter):
             )
             return
 
+        # 1.1.11 — operator-tunable request timeout. The Anthropic SDK
+        # accepts a plain float (seconds) for the request timeout. See
+        # ai_proxy.__init__ for the DEFAULT_TIMEOUT_SECONDS_* constants;
+        # self.timeout_seconds is populated by build_adapter.
         client = AsyncAnthropic(
             api_key=self.api_key,
             base_url=self.endpoint or None,
+            timeout=float(self.timeout_seconds or 120.0),
         )
 
         try:
@@ -218,9 +223,14 @@ class ClaudeAdapter(ProviderAdapter):
                 error="Claude API key is not configured.",
             )
 
+        # 1.1.11 — operator-tunable request timeout. The Anthropic SDK
+        # accepts a plain float (seconds) for the request timeout. See
+        # ai_proxy.__init__ for the DEFAULT_TIMEOUT_SECONDS_* constants;
+        # self.timeout_seconds is populated by build_adapter.
         client = AsyncAnthropic(
             api_key=self.api_key,
             base_url=self.endpoint or None,
+            timeout=float(self.timeout_seconds or 120.0),
         )
         try:
             resp = await client.messages.create(
