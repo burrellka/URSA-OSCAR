@@ -294,9 +294,10 @@ def test_system_prompt_falls_back_when_no_profile():
 
 
 def test_tool_descriptors_count_and_membership():
-    """11 Phase 5 tools + 2 from 6.1 + 1 from 6.2 + 1 from 6.3 = 15."""
+    """11 Phase 5 tools + 2 from 6.1 + 1 from 6.2 + 1 from 6.3 + 1.1.12's
+    load_tools discovery tool = 16."""
     names = [t["function"]["name"] for t in TOOL_DESCRIPTORS]
-    assert len(names) == 15
+    assert len(names) == 16
     for required in [
         "get_nightly_summary", "get_ahi_breakdown", "list_available_nights",
         "compare_periods", "analyze_correlation", "get_trend",
@@ -310,6 +311,8 @@ def test_tool_descriptors_count_and_membership():
         "analyze_prediction",
         # Phase 6 Ticket 6.3:
         "generate_report",
+        # 1.1.12 — progressive tool disclosure discovery tool.
+        "load_tools",
     ]:
         assert required in names, f"Missing tool descriptor: {required}"
 
@@ -337,7 +340,7 @@ def test_progressive_disclosure_core_set_is_small():
     require touching the test on purpose."""
     from ursa_oscar.ai_proxy.tools import core_descriptors, TOOL_META
     core = core_descriptors()
-    assert len(core) <= 3, (
+    assert len(core) <= 4, (
         f"Core tool set unexpectedly large: {len(core)} tools. "
         "Each core tool is a fixed per-turn token tax. Promoting a tool "
         "into core is a product decision; if this is intentional, raise "
@@ -346,8 +349,12 @@ def test_progressive_disclosure_core_set_is_small():
     core_names = [
         (d["function"]["name"]) for d in core
     ]
+    # 1.1.12 slice 2 — load_tools is core so the model can always
+    # activate deferred groups. get_nightly_summary + get_user_profile
+    # remain core because they ground every conversation.
     assert "get_nightly_summary" in core_names
     assert "get_user_profile" in core_names
+    assert "load_tools" in core_names
     for name in core_names:
         assert TOOL_META[name]["core"] is True
 

@@ -32,9 +32,21 @@ from ..ai_proxy import (
 )
 from ..ai_proxy.config_store import AiProxyConfig
 from ..ai_proxy.prompt import render_system_prompt
+# 1.1.12 — progressive tool disclosure.
+from ..ai_proxy.tool_index import (
+    LOAD_TOOLS_NAME,
+    build_tool_index,
+    format_load_result,
+)
 from ..ai_proxy.providers.base import AiStreamEvent
 from ..ai_proxy.providers.presets import PRESETS
-from ..ai_proxy.tools import TOOL_DESCRIPTORS, execute_tool
+from ..ai_proxy.tools import (
+    GROUP_LABELS,
+    TOOL_DESCRIPTORS,
+    core_descriptors,
+    descriptors_by_group,
+    execute_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -391,6 +403,29 @@ async def chat(req: ChatRequest, request: Request):
         custom_template=template_text,
     )
 
+    # 1.1.12 — Progressive tool disclosure.
+    #
+    # Pre-1.1.12: every chat turn shipped all 15+ tool schemas (~5,300
+    # tokens) even when the model only ever called get_nightly_summary.
+    # On a Gemma-4-class local LLM with a modest context budget that tax
+    # is real latency, not just cost. Now: only core tools ride every
+    # turn; the rest are summarized in a compact AVAILABLE TOOLS index
+    # appended to the system prompt, and the model activates a group on
+    # demand via the ``load_tools`` discovery tool. The chat loop below
+    # mutates ``active_tools`` in response to load_tools calls without
+    # dispatching through execute_tool (activation is a control-flow
+    # concern, not a tool result).
+    deferred_catalog = build_tool_index(
+        descriptors_by_group(),
+        GROUP_LABELS,
+    )
+    if deferred_catalog.index_text:
+        system_prompt = system_prompt + "\n\n" + deferred_catalog.index_text
+    # Start with the core catalog. active_tools grows as the model loads
+    # deferred groups; the mutation is confined to this generator's
+    # closure so parallel chat requests don't step on each other.
+    active_tools: list[dict] = list(core_descriptors())
+
     # API base URL for in-process tool execution. The chat endpoint
     # runs inside the API process; we want loopback (don't round-trip
     # through the public URL / web proxy). Build the URL from the
@@ -475,7 +510,7 @@ async def chat(req: ChatRequest, request: Request):
                 async for line in _with_keepalive(
                     adapter.chat(
                         messages=messages,
-                        tools=TOOL_DESCRIPTORS,
+                        tools=active_tools,  # 1.1.12 — grows as load_tools activates deferred groups
                         system_prompt=system_prompt,
                     ),
                     keepalive_seconds=5.0,
@@ -577,6 +612,52 @@ async def chat(req: ChatRequest, request: Request):
 
             # Execute each requested tool and append the result.
             for tc in pending_tool_calls:
+                # 1.1.12 — load_tools is intercepted here. Activation
+                # has to mutate active_tools (the list handed to the
+                # adapter on the NEXT loop iteration) — that isn't a
+                # concern the generic execute_tool dispatcher can
+                # satisfy. Every other tool falls through to the
+                # normal in-process API executor.
+                if tc.name == LOAD_TOOLS_NAME:
+                    resolve = deferred_catalog.resolve(
+                        names=tc.arguments.get("names"),
+                        groups=tc.arguments.get("groups"),
+                    )
+                    # Splice newly-activated descriptors into the live
+                    # catalog. Dedup on name so a model that calls
+                    # load_tools twice for the same group doesn't
+                    # double-list them.
+                    existing_names = {
+                        (d.get("function") or {}).get("name")
+                        for d in active_tools
+                    }
+                    for d in resolve.descriptors:
+                        nm = (d.get("function") or {}).get("name")
+                        if nm and nm not in existing_names:
+                            active_tools.append(d)
+                            existing_names.add(nm)
+                    load_message = format_load_result(resolve)
+                    logger.info(
+                        "ai/chat: load_tools activated %d tools; unknown=%s",
+                        len(resolve.loaded_names), resolve.unknown,
+                    )
+                    result = {
+                        "ok": True,
+                        "message": load_message,
+                        "activated": resolve.loaded_names,
+                        "unknown": resolve.unknown,
+                    }
+                    yield _sse_pack(AiStreamEvent(
+                        event_type="tool_result",
+                        payload={"id": tc.id, "result": result},
+                    ))
+                    messages.append(AiMessage(
+                        role="tool",
+                        tool_call_id=tc.id,
+                        content=json.dumps(result),
+                    ))
+                    continue
+
                 result = await execute_tool(
                     tc.name, tc.arguments, api_base_url, auth_header=auth_header,
                 )

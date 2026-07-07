@@ -27,11 +27,12 @@ from ursa_oscar.help.registry import TOPICS as BACKEND_TOPICS
 # ---------------------------------------------------------------------------
 
 
-def test_backend_registry_has_37_topics():
-    """The architect outline lands at 37 topics (4 + 8 + 5 + 6 + 5 + 5 + 4)."""
-    assert len(BACKEND_TOPICS) == 37, (
-        f"Expected 37 Help topics, found {len(BACKEND_TOPICS)}. "
-        f"If a topic was added, update test_backend_registry_has_37_topics "
+def test_backend_registry_has_38_topics():
+    """The architect outline lands at 37 base topics + 1.1.11's
+    arch-ai-context = 38 (4 + 8 + 5 + 6 + 6 + 5 + 4)."""
+    assert len(BACKEND_TOPICS) == 38, (
+        f"Expected 38 Help topics, found {len(BACKEND_TOPICS)}. "
+        f"If a topic was added, update this test's expected count "
         f"and the frontend topics.ts."
     )
 
@@ -60,12 +61,13 @@ def test_section_distribution_matches_outline():
     counts: dict[str, int] = {}
     for t in BACKEND_TOPICS:
         counts[t.section] = counts.get(t.section, 0) + 1
+    # 1.1.11 — architecture gains arch-ai-context, so the count is now 6.
     expected = {
         "Getting started": 4,
         "Using URSA-OSCAR": 8,
         "Understanding the data": 5,
         "Methodology": 6,
-        "Architecture and deployment": 5,
+        "Architecture and deployment": 6,
         "Troubleshooting": 5,
         "About URSA-OSCAR": 4,
     }

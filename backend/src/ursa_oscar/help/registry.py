@@ -120,6 +120,14 @@ _METADATA: list[tuple[str, str, SectionName, list[str]]] = [
         ["multi-instance", "household", "multiple users", "separate"]),
     ("arch-deployment", "Deployment topologies", "Architecture and deployment",
         ["deployment", "truenas", "dockge", "synology", "qnap", "compose"]),
+    # 1.1.11 — what URSA sends to the model per turn (context budget)
+    ("arch-ai-context", "What URSA sends to the AI model",
+        "Architecture and deployment",
+        [
+            "ai", "context", "system prompt", "tools", "tokens",
+            "context window", "local llm", "gemma", "qwen", "deepseek",
+            "context budget", "prompt caching",
+        ]),
 
     # Troubleshooting
     ("troubleshoot-import", "Import not finding files", "Troubleshooting",

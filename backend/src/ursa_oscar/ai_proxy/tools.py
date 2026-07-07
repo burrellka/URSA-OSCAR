@@ -58,6 +58,10 @@ TOOL_META: dict[str, dict[str, bool | str | None]] = {
     # Core tools — always active.
     "get_nightly_summary":            {"core": True,  "group": None},
     "get_user_profile":               {"core": True,  "group": None},
+    # 1.1.12 — the discovery tool itself is core. Its execute() path is
+    # intercepted by the chat loop, not routed through execute_tool, so
+    # it doesn't need an entry in _TOOL_ROUTES either.
+    "load_tools":                     {"core": True,  "group": None},
     # Analytics — per-night detail beyond the summary card.
     "get_ahi_breakdown":              {"core": False, "group": "analytics"},
     "list_available_nights":          {"core": False, "group": "analytics"},
@@ -586,6 +590,56 @@ TOOL_DESCRIPTORS: list[dict] = [
                 "type": "object",
                 "properties": {"date": {"type": "string"}},
                 "required": ["date"],
+            },
+        },
+    },
+    # 1.1.12 — load_tools discovery tool. The system prompt's AVAILABLE
+    # TOOLS section lists deferred capabilities as compact single-line
+    # entries; this tool lets the model activate a group (or specific
+    # tools) mid-conversation so it can call them. The chat loop
+    # intercepts this call BEFORE dispatching to execute_tool — a real
+    # execute() isn't needed because activation mutates the live tool
+    # list, which isn't a per-tool concern.
+    {
+        "type": "function",
+        "function": {
+            "name": "load_tools",
+            "description": (
+                "Activate tools before you call them. The system prompt's "
+                "'AVAILABLE TOOLS' section lists capabilities that EXIST "
+                "but are NOT YET active (analytics, trends, statistical "
+                "analysis, reports, manual logs). Call this with their "
+                "group keys and/or specific tool names to load their full "
+                "definitions; they become callable on your very next step. "
+                "If a capability you need is listed there, load it — never "
+                "tell the user you cannot do something that appears in the "
+                "list. Load only what you need this turn; each loaded "
+                "tool spends context tokens on every subsequent turn."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "groups": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Group keys from the AVAILABLE TOOLS index "
+                            "(e.g. 'analytics', 'trends'). Loads every "
+                            "tool in the group. Prefer this when you "
+                            "want a whole category."
+                        ),
+                    },
+                    "names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Specific tool names to load (e.g. "
+                            "'analyze_correlation'). Use when you only "
+                            "need one or two tools from a group."
+                        ),
+                    },
+                },
+                "required": [],
             },
         },
     },
