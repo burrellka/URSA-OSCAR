@@ -356,8 +356,83 @@ exactly named that. Should I search Help for related topics?"
   that could be misused, etc.)
 
 Today's date (user frame): {today_date}
-Current viewing: {current_view_context}
 """
+
+
+# 1.1.13 — Volatile suffix template (stable-prefix caching, KAIROS D74).
+#
+# Content that CHANGES within a session (the user navigating from one
+# night to another mid-conversation) must live at the END of the
+# assembled system prompt, AFTER the stable content and the (also stable)
+# AVAILABLE TOOLS index. Anything volatile at the front breaks
+# llama.cpp / LocalAI's cross-request prefix/KV cache — the cache
+# matches from the start and stops at the first differing byte, so a
+# single per-turn changing line poisons everything behind it.
+#
+# What's volatile: the "current viewing" line. If the operator has the
+# chat panel open and clicks between Daily View pages, ``current_view``
+# changes and the prefix diverges at that point.
+#
+# What's NOT volatile enough to matter: ``today_date`` (a per-day date
+# is byte-stable within a session — it only recomputes at midnight, so
+# it can stay in the stable block).
+#
+# The chat endpoint stitches: STABLE_PROMPT + tool_index + VOLATILE_SUFFIX.
+VOLATILE_SUFFIX_TEMPLATE = "Current viewing: {current_view_context}"
+
+
+def render_system_prompt_parts(
+    *,
+    user_profile: dict | None,
+    device_clock: dict | None,
+    today_date: date_t | None = None,
+    current_view: str | None = None,
+    custom_template: str | None = None,
+) -> tuple[str, str]:
+    """1.1.13 — Render the system prompt as (stable, volatile_suffix).
+
+    Returns two strings the chat endpoint stitches back together with
+    the (also stable) AVAILABLE TOOLS index in between:
+
+        STABLE + tool_index + VOLATILE
+
+    The stable part is byte-identical turn-to-turn within a session so
+    llama.cpp / LocalAI can reuse its prefix / KV cache and skip
+    reprocessing thousands of tokens. The volatile part carries only
+    the "current viewing" line — the one field that changes when the
+    operator navigates to a different night mid-chat.
+
+    Same input arguments as the pre-1.1.13 :func:`render_system_prompt`
+    function (retained below as a thin wrapper for backward compat).
+
+    Note: ``today_date`` stays in the STABLE half because a per-day
+    date is byte-stable across a chat session — it only recomputes at
+    midnight, at which point re-caching the prefix once is fine.
+    """
+    template = (custom_template or DEFAULT_TEMPLATE).strip()
+    today = today_date or datetime.utcnow().date()
+
+    stable_context = {
+        "user_profile_summary": _summarize_user_profile(user_profile),
+        "device_clock_description": _describe_device_clock(device_clock),
+        "today_date": today.isoformat(),
+        # Empty string for current_view_context in case any operator's
+        # custom_template still references it in the stable body.
+        # _format_lenient leaves unknown placeholders alone, so we don't
+        # actively strip them — this just prevents a legacy custom
+        # template from rendering a literal "{current_view_context}"
+        # in the stable prefix. New DEFAULT_TEMPLATE no longer contains
+        # the placeholder.
+        "current_view_context": "",
+    }
+    stable = _format_lenient(template, stable_context)
+
+    volatile = VOLATILE_SUFFIX_TEMPLATE.format(
+        current_view_context=(
+            current_view or "URSA-OSCAR dashboard (no specific night)"
+        ),
+    )
+    return stable, volatile
 
 
 def render_system_prompt(
@@ -378,20 +453,21 @@ def render_system_prompt(
     ``custom_template`` overrides the default if the operator
     customized the prompt in Settings. The same placeholders are
     available; missing placeholders just render as empty.
-    """
-    template = (custom_template or DEFAULT_TEMPLATE).strip()
-    today = today_date or datetime.utcnow().date()
 
-    context = {
-        "user_profile_summary": _summarize_user_profile(user_profile),
-        "device_clock_description": _describe_device_clock(device_clock),
-        "today_date": today.isoformat(),
-        "current_view_context": current_view or "URSA-OSCAR dashboard (no specific night)",
-    }
-    # Safe substitution — KeyError on unknown placeholders is annoying for
-    # users editing the template, so use a forgiving formatter that leaves
-    # unknown {tokens} in place.
-    return _format_lenient(template, context)
+    1.1.13 — this is the backward-compat façade. It concatenates the
+    stable + volatile parts returned by :func:`render_system_prompt_parts`
+    so callers that don't care about prefix caching still get the same
+    string. The chat endpoint uses the two-part version so it can splice
+    the tool index in between.
+    """
+    stable, volatile = render_system_prompt_parts(
+        user_profile=user_profile,
+        device_clock=device_clock,
+        today_date=today_date,
+        current_view=current_view,
+        custom_template=custom_template,
+    )
+    return stable + "\n\n" + volatile
 
 
 # -------------------------------------------------------------------------

@@ -31,7 +31,7 @@ from ..ai_proxy import (
     get_preset,
 )
 from ..ai_proxy.config_store import AiProxyConfig
-from ..ai_proxy.prompt import render_system_prompt
+from ..ai_proxy.prompt import render_system_prompt, render_system_prompt_parts
 # 1.1.12 — progressive tool disclosure.
 from ..ai_proxy.tool_index import (
     LOAD_TOOLS_NAME,
@@ -396,7 +396,29 @@ async def chat(req: ChatRequest, request: Request):
         cfg.custom_system_prompt
         or template_store.get_template_text()
     )
-    system_prompt = render_system_prompt(
+    # 1.1.13 — Stable-prefix caching (KAIROS D74 pattern).
+    #
+    # Assemble the system prompt as:
+    #     STABLE_PART + tool_index + VOLATILE_SUFFIX
+    #
+    # where STABLE_PART is byte-identical across every turn of a
+    # session (persona, instructions, profile, device-clock, today's
+    # date), tool_index is the also-stable AVAILABLE TOOLS block from
+    # progressive disclosure, and VOLATILE_SUFFIX carries only
+    # "Current viewing: ..." which changes when the operator navigates
+    # to a different night mid-chat.
+    #
+    # llama.cpp / LocalAI's cross-request prefix/KV cache reuses the
+    # matching leading run of tokens. Putting anything volatile at the
+    # front breaks the cache; keeping the ~3,500-token DEFAULT_TEMPLATE
+    # in the stable prefix means turn 2+ of the same conversation
+    # skips reprocessing the whole thing.
+    #
+    # Pre-1.1.13 (1.1.12 slice 2) appended the tool_index AFTER the
+    # rendered template — but the template ended with the volatile
+    # "Current viewing:" line, so the stable index was trailing a
+    # volatile byte. That's the specific ordering bug fixed here.
+    stable_prompt, volatile_suffix = render_system_prompt_parts(
         user_profile=profile if req.context.include_profile else None,
         device_clock=(profile or {}).get("display", {}).get("device_clock"),
         today_date=today,
@@ -420,8 +442,16 @@ async def chat(req: ChatRequest, request: Request):
         descriptors_by_group(),
         GROUP_LABELS,
     )
+    # 1.1.13 — splice the (stable) AVAILABLE TOOLS index into the
+    # STABLE half of the system prompt, BEFORE the volatile suffix.
+    # Order: [stable persona/instructions/profile/date] + [stable index]
+    # + [volatile current-viewing line]. Everything before the volatile
+    # line is byte-identical turn-to-turn so llama.cpp's prefix cache
+    # can reuse it in full.
     if deferred_catalog.index_text:
-        system_prompt = system_prompt + "\n\n" + deferred_catalog.index_text
+        stable_prompt = stable_prompt + "\n\n" + deferred_catalog.index_text
+    system_prompt = stable_prompt + "\n\n" + volatile_suffix
+
     # Start with the core catalog. active_tools grows as the model loads
     # deferred groups; the mutation is confined to this generator's
     # closure so parallel chat requests don't step on each other.
