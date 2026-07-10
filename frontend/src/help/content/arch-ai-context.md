@@ -133,6 +133,34 @@ To calibrate expectations against fear:
 - **The URSA-OSCAR source code.** The help system content is queryable via `get_help_topic` — it lands in the response, not the request, and only when the model chose to call the tool.
 - **Anthropic-style prompt-caching metadata for non-Claude providers.** OpenAI's cache markers are sent; local LLMs simply see the tokens.
 
+## Stable-prefix caching (as of 1.1.13)
+
+llama.cpp / LocalAI (and Anthropic at the API level) reuse the KV / prefix cache across requests when the leading run of tokens is byte-identical. The cache matches from the start and stops at the first differing byte, so anything volatile at the front of the system prompt breaks the cache for everything behind it.
+
+URSA's system prompt is now assembled as:
+
+```
+[stable persona + instructions + user profile + device clock + today's date]
++ [stable AVAILABLE TOOLS index]
++ [volatile: "Current viewing: ..."]
+```
+
+Everything before the volatile tail is byte-identical turn-to-turn within a session. On turn 2, llama.cpp reuses the entire cached prefix (~3,500-token DEFAULT_TEMPLATE + ~400-token AVAILABLE TOOLS index + profile + date) and only reprocesses the ~50-byte "Current viewing" tail plus your new message. On a Gemma-4 CPU box that's the difference between a 20-second first-token-latency and a sub-2-second one on turn 2.
+
+**Two conditions have to hold for the win to land:**
+
+1. **The prefix has to actually be byte-stable** — URSA's `render_system_prompt_parts()` guarantees this; the guarantee is locked in by `backend/tests/unit/test_stable_prefix_caching.py`. If a future PR reintroduces a per-turn timestamp (clock, uuid, live location) into the stable half, that test regresses.
+2. **The inference engine has to have cross-request prefix reuse turned on.** For LocalAI this is a server-config concern, not a URSA concern. Confirm on the box — the flag is usually `--parallel` + slot cache enabled, or the `promptcache` option in LocalAI's config.
+
+If you have the code side working but no latency improvement on turn 2, the engine's prefix cache is likely off.
+
+**What is and isn't in the volatile suffix:**
+- `Current viewing: Daily View 2026-07-06` — changes when the operator navigates. This IS in the volatile suffix.
+- Today's date (`2026-07-08`) — a per-day value is byte-stable across all turns of a single chat session (it only recomputes at midnight, at which point a single re-cache event is fine). This is NOT in the volatile suffix; it lives in the stable prefix.
+- Nothing else. If a future release adds a per-turn signal (e.g., live CPAP session status, a "generated at" timestamp), it must be threaded into `VOLATILE_SUFFIX_TEMPLATE`, not the DEFAULT_TEMPLATE body.
+
+Pattern reference: KAIROS's `docs/stable-prefix-caching-for-sibling-devs.md` (D74). URSA's implementation is a straight adoption; Vitals is expected to converge.
+
 ## Timeouts
 
 The AI proxy's HTTP read timeout is configurable per provider at **Settings → AI Assistant → Request timeout**. Defaults are 300 seconds (5 minutes) for Local LLM providers and 120 seconds (2 minutes) for cloud providers. Local defaults are longer because thinking-mode models on CPU can spend 60-180 seconds on the chain-of-thought before emitting the first content token; the timeout is measured from connect, not from the last byte received.

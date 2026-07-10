@@ -4,6 +4,20 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
+**1.1.13** — Stable-prefix caching for the AI proxy system prompt. Second-turn latency drops sharply on llama.cpp / LocalAI when its cross-request prefix cache is on.
+
+llama.cpp (and every runtime that inherits its prefix / KV cache) reuses the KV state of the leading byte-identical run of tokens across requests. The match starts at position 0 and stops at the first differing byte — so anything volatile at the FRONT of the system prompt (a clock, a live location, a per-turn UUID) invalidates the cache for everything behind it. URSA's system prompt was almost all stable, but ended with a `Current viewing: <navigation state>` line that changed when the operator moved between Daily View / Trends / a specific night. That one volatile tail was near the front of the assembled prompt in 1.1.12 because the tool index (also stable) was appended AFTER it. Every turn re-read every byte after the volatile line — the persona template, the user profile, the tool index. On a Gemma-4-class CPU box this was a real chunk of TTFT.
+
+The 1.1.13 fix splits the template into `render_system_prompt_parts() → (stable, volatile)` and reassembles as: `[stable persona + profile + date] + [stable AVAILABLE TOOLS index] + [volatile "Current viewing: …"]`. Every stable byte now precedes the volatile tail. On turn 2 of the same session, llama.cpp's cache hits the entire ~3,900-token leading run and only reprocesses the ~50-byte volatile line plus your new message. `render_system_prompt()` is retained as a backward-compat façade returning `stable + "\n\n" + volatile` so any caller that doesn't care about caching still gets a single string with unchanged content. Pattern lifted directly from KAIROS's `docs/stable-prefix-caching-for-sibling-devs.md` (their D74); URSA is the first sibling to adopt.
+
+Byte-stability is guaranteed by a 6-test audit in `backend/tests/unit/test_stable_prefix_caching.py`: the stable prefix hashes SHA256-identical across two turns with different `current_view`, the volatile suffix actually differs, the volatile template can only reference `current_view_context` (no `{today_date}`, no profile, no clock), the backward-compat façade still returns `stable + "\n\n" + volatile`, `today_date` stays in the stable half (a per-day value is stable across a chat session and re-caches once at midnight — acceptable), and the chat endpoint's assembly order puts every stable byte before the volatile tail.
+
+Two things have to hold for the win to actually land in production: the code side (guaranteed by the tests) AND the inference server's cross-request prefix cache turned on. For LocalAI that's a server-config concern (`--parallel` + slot cache, or the `promptcache` option in its config). If your code side is on 1.1.13 but turn-2 latency doesn't drop, the engine cache is off.
+
+The `arch-ai-context` Help topic is updated with the stable-prefix explanation and the "code side ≠ engine side" gotcha.
+
+Reference: KAIROS `docs/stable-prefix-caching-for-sibling-devs.md` + `docs/heavy-tool-architecture-for-sibling-devs.md` (read-only cross-project reference — URSA implements its own version). The 1.1.12 progressive-tool-disclosure work is a prerequisite: the tool index is one of the largest single blocks in the stable prefix, so keeping it stable is where most of the caching win comes from.
+
 **1.1.12** — Progressive tool disclosure. Per-turn AI tool tax cut by roughly two-thirds; large context-budget win for local LLM operators.
 
 Prior to 1.1.12, URSA shipped all 15 tool schemas (~5,300 tokens) on every chat turn even when the model only ever called one or two. On a Gemma-4-class local LLM with a modest context window that fixed cost was real latency, not just cost. The 1.1.12 architecture — lifted from KAIROS's progressive-tool-disclosure spec, independently converged with Vitals' equivalent — tiers tools into a small always-on **core** set (get_nightly_summary, get_user_profile, load_tools) and larger **deferred** groups (analytics, trends, advanced-analysis, reports, logs) held behind a compact `AVAILABLE TOOLS` index in the system prompt. The model activates a group on demand via the new `load_tools` discovery tool. For obvious intents ("show me my AHI trend"), a cheap deterministic lexical pre-pass activates the matching group BEFORE the first model call so the extra round-trip is avoided entirely. Typical per-turn tool cost drops from ~5,300 tokens to ~1,000-1,500 tokens.
@@ -103,7 +117,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.1.9** — **SECURITY**: closes MCP authentication-bypass; DCR opt-in + redirect allowlist
 - **1.1.10** — Multi-EVE session clustering fix; AHI=0 on multi-mask-on nights
 - **1.1.11** — Operator-tunable AI request timeout + Help topic documenting model-context contents
-- **1.1.12** — Progressive tool disclosure (KAIROS pattern) — cuts per-turn tool tax by ~2/3 (this release)
+- **1.1.12** — Progressive tool disclosure (KAIROS pattern) — cuts per-turn tool tax by ~2/3
+- **1.1.13** — Stable-prefix caching (KAIROS D74) — reorders system prompt so llama.cpp / LocalAI's cross-request KV cache hits (this release)
 
 ## How to check the running version
 

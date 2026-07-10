@@ -71,7 +71,7 @@ Whichever you pick, you need:
 - TLS termination at the proxy (HTTPS on the public side)
 - The proxy forwarding `X-Forwarded-Proto: https` to the container
 
-URSA-OSCAR's MCP container handles `X-Forwarded-Proto` correctly out of the box as of 1.1.12 — but the proxy still has to send it.
+URSA-OSCAR's MCP container handles `X-Forwarded-Proto` correctly out of the box as of 1.1.13 — but the proxy still has to send it.
 
 ---
 
@@ -118,7 +118,7 @@ Open `docker-compose.yml` and find the commented-out `ursa-oscar-mcp:` block nea
 
 ```yaml
   ursa-oscar-mcp:
-    image: brain40/ursa-oscar-mcp:1.1.12
+    image: brain40/ursa-oscar-mcp:1.1.13
     container_name: ursa-oscar-mcp
     environment:
       URSA_OSCAR_API_URL: http://ursa-oscar-api:8000
@@ -261,7 +261,7 @@ The full set of tools is documented in the in-app help under the AI Assistant se
 | claude.ai discovery fails | `URSA_OSCAR_MCP_BASE_URL` mismatch | Must match your actual public URL exactly (including `https://`) |
 | 502 from your subdomain | Proxy not routing to 8085 | Test with `curl http://localhost:8085/version` on the host — should return JSON |
 | 401 on `/authorize` | Pre-registered client mismatch | Confirm `OAUTH_CLIENT_ID` + `OAUTH_CLIENT_SECRET` in `.env` match what claude.ai is being given |
-| Tools list returns empty | Tools registered against wrong module | Should be impossible with 1.1.12 — file a bug if it happens |
+| Tools list returns empty | Tools registered against wrong module | Should be impossible with 1.1.13 — file a bug if it happens |
 
 ---
 
