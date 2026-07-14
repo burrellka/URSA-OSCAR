@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import date as date_t
 
 from fastapi import APIRouter, HTTPException, Request
@@ -31,6 +32,11 @@ from ..ai_proxy import (
     get_preset,
 )
 from ..ai_proxy.config_store import AiProxyConfig
+from ..ai_proxy.context_budget import (
+    compute_breakdown,
+    estimate_tokens,
+    normalize_usage,
+)
 from ..ai_proxy.prompt import render_system_prompt, render_system_prompt_parts
 # 1.1.12 — progressive tool disclosure.
 from ..ai_proxy.tool_index import (
@@ -551,6 +557,53 @@ async def chat(req: ChatRequest, request: Request):
         # connection warm without adding semantic events.
         yield ": keepalive\n\n"
 
+        # 1.1.14 — per-turn observability (KAIROS/Vitals note). Track the
+        # wall-clock, the round count, and which tools actually ran, so
+        # the terminal ``complete`` event can carry a ``meta`` block the
+        # UI renders as a per-turn line (tokens · elapsed · model) plus an
+        # expandable context breakdown. You can't cut what you can't see;
+        # this is what makes the tool-diet follow-up a measurement instead
+        # of a guess.
+        turn_start = time.monotonic()
+        rounds = 0
+        tools_used: list[str] = []
+
+        def _build_meta(
+            *,
+            usage: dict | None,
+            stop_reason: str | None,
+            answer_text: str,
+        ) -> dict:
+            """Assemble the per-turn meta from the FINAL-round payload.
+            ``messages`` / ``active_tools`` / ``system_prompt`` are the
+            request as it stood on the last adapter call."""
+            breakdown = compute_breakdown(
+                system_prompt=system_prompt,
+                tools=active_tools,
+                messages=messages,
+            )
+            norm = normalize_usage(usage)
+            estimated = norm is None
+            if norm is None:
+                # No server usage — fall back to the chars/4 estimate. The
+                # prompt estimate is the breakdown total (the exact payload
+                # sent); completion is estimated from the answer text.
+                norm = {
+                    "prompt": breakdown.total,
+                    "completion": estimate_tokens(answer_text),
+                    "total": breakdown.total + estimate_tokens(answer_text),
+                }
+            return {
+                "model": getattr(adapter, "model", None),
+                "provider_id": cfg.provider_id,
+                "rounds": rounds,
+                "elapsed_ms": int((time.monotonic() - turn_start) * 1000),
+                "finish_reason": stop_reason,
+                "tools_used": list(tools_used),
+                "tokens": {**norm, "estimated": estimated},
+                "breakdown": breakdown.as_dict(),
+            }
+
         messages = list(req.messages)
         # Safety cap on tool loops. Each loop = one adapter.chat() call +
         # possible tool executions. Typical use: 1-3 loops for a multi-
@@ -573,6 +626,7 @@ async def chat(req: ChatRequest, request: Request):
         # exits naturally, which the client also handles correctly).
         final_complete: AiStreamEvent | None = None
         for loop_n in range(8):
+            rounds = loop_n + 1  # 1.1.14 — surfaced in per-turn meta
             pending_tool_calls: list[AiToolCall] = []
             saw_text = False
             # 1.1.4 — accumulate text content to detect the "malformed
@@ -737,6 +791,15 @@ async def chat(req: ChatRequest, request: Request):
                                 ),
                                 "finish_reason": "length",
                                 "had_reasoning": has_reasoning,
+                                # 1.1.14 — instrument the failure: carry the
+                                # per-turn meta so the operator sees how big
+                                # the prompt was even on a truncated turn.
+                                "meta": _build_meta(
+                                    usage=(final_complete.payload.get("usage")
+                                           if final_complete else None),
+                                    stop_reason="length",
+                                    answer_text=accumulated_reasoning,
+                                ),
                             },
                         ))
                         return
@@ -752,8 +815,21 @@ async def chat(req: ChatRequest, request: Request):
                         )
 
                 # Emit the captured final complete now (if any) so the
-                # client gets a clean end-of-stream signal.
+                # client gets a clean end-of-stream signal. 1.1.14 — enrich
+                # it with the per-turn meta (tokens/breakdown/model/timing/
+                # tools-used) the UI renders under the message.
                 if final_complete is not None:
+                    final_complete = AiStreamEvent(
+                        event_type="complete",
+                        payload={
+                            **final_complete.payload,
+                            "meta": _build_meta(
+                                usage=final_complete.payload.get("usage"),
+                                stop_reason=stop_reason,
+                                answer_text=accumulated_text,
+                            ),
+                        },
+                    )
                     yield _sse_pack(final_complete)
                 return
 
@@ -773,6 +849,7 @@ async def chat(req: ChatRequest, request: Request):
                 # concern the generic execute_tool dispatcher can
                 # satisfy. Every other tool falls through to the
                 # normal in-process API executor.
+                tools_used.append(tc.name)  # 1.1.14 — execution trace for meta
                 if tc.name == LOAD_TOOLS_NAME:
                     resolve = deferred_catalog.resolve(
                         names=tc.arguments.get("names"),

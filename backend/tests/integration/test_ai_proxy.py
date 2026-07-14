@@ -1537,6 +1537,54 @@ def test_chat_single_tool_query_full_loop(chat_ready_client, monkeypatch):
     final = next(e for e in events if e["event_type"] == "complete")
     assert final["payload"]["stop_reason"] == "end_turn"
 
+    # 1.1.14 — the terminal complete carries a per-turn meta block.
+    meta = final["payload"]["meta"]
+    # Breakdown buckets present + total is their sum.
+    bd = meta["breakdown"]
+    assert set(bd) == {"system", "tools", "tool_results", "history", "total"}
+    assert bd["total"] == bd["system"] + bd["tools"] + bd["tool_results"] + bd["history"]
+    # System prompt is a real chunk (persona + tool index + profile-off).
+    assert bd["system"] > 0
+    # The tool result we injected shows in the tool_results bucket.
+    assert bd["tool_results"] > 0
+    # Execution trace: exactly the one tool that ran.
+    assert meta["tools_used"] == ["get_nightly_summary"]
+    # Two adapter rounds (tool turn + prose turn).
+    assert meta["rounds"] == 2
+    assert meta["elapsed_ms"] >= 0
+    # Real server usage was provided (output_tokens=42) -> not estimated.
+    assert meta["tokens"]["completion"] == 42
+    assert meta["tokens"]["estimated"] is False
+
+
+def test_chat_meta_estimates_tokens_when_usage_absent(chat_ready_client, monkeypatch):
+    """When the provider returns no usable usage (local servers that
+    ignore include_usage), meta.tokens falls back to the chars/4 estimate
+    and is flagged estimated=true so the UI can render a '~'."""
+    script = [
+        [
+            _ai_event("text", text="You slept well."),
+            _ai_event("complete", stop_reason="end_turn", usage={}),
+        ],
+    ]
+    _setup_chat(monkeypatch, script)
+
+    r = chat_ready_client.post("/api/v1/ai/chat", json={
+        "messages": [{"role": "user", "content": "how did I sleep?"}],
+        "context": {"include_profile": False},
+    })
+    assert r.status_code == 200
+    events = _parse_sse_events(r.content)
+    meta = next(e for e in events if e["event_type"] == "complete")["payload"]["meta"]
+    assert meta["tokens"]["estimated"] is True
+    # Prompt estimate == the breakdown total (the exact payload sent).
+    assert meta["tokens"]["prompt"] == meta["breakdown"]["total"]
+    # Completion estimated from the answer text ("You slept well." -> 4 tok).
+    assert meta["tokens"]["completion"] >= 1
+    # No tools ran this turn.
+    assert meta["tools_used"] == []
+    assert meta["rounds"] == 1
+
 
 # --- Q2 — multi-tool comparison loop ------------------------------------
 
