@@ -6,7 +6,7 @@ networks:
 
 services:
   ursa-oscar-api:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-api:${URSA_OSCAR_API_IMAGE_VERSION:-1.1.13}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-api:${URSA_OSCAR_API_IMAGE_VERSION:-1.1.14}
     container_name: ursa-oscar-api
     environment:
       URSA_OSCAR_DB_PATH: /data/ursa-oscar.duckdb
@@ -22,7 +22,7 @@ services:
       # auto-generates /data/jwt_secret on first boot. Set explicitly
       # only when managing rotation yourself.
       URSA_OSCAR_JWT_SECRET: ${URSA_OSCAR_JWT_SECRET:-}
-      # 1.1.13 — version chips are now self-introspecting. The API
+      # 1.1.14 — version chips are now self-introspecting. The API
       # reads its own version from packaging metadata, queries the MCP
       # container's /version endpoint, reads the watcher's startup-
       # written /data/versions/watcher.txt, and the web bundle bakes
@@ -38,7 +38,7 @@ services:
     restart: unless-stopped
 
   ursa-oscar-mcp:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-mcp:${URSA_OSCAR_MCP_IMAGE_VERSION:-1.1.13}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-mcp:${URSA_OSCAR_MCP_IMAGE_VERSION:-1.1.14}
     container_name: ursa-oscar-mcp
     environment:
       URSA_OSCAR_API_URL: http://ursa-oscar-api:8000
@@ -58,7 +58,7 @@ services:
     ports:
       - "${URSA_OSCAR_MCP_HOST_PORT:-8082}:8000"
     volumes:
-      # 1.1.13 — MCP needs /data:rw (was :ro) to persist DCR-registered
+      # 1.1.14 — MCP needs /data:rw (was :ro) to persist DCR-registered
       # OAuth clients to /data/mcp_oauth_clients.json. Same trust model
       # as the API and watcher containers (both already :rw); the /data
       # dir is operator-owned on a private LAN volume.
@@ -71,7 +71,7 @@ services:
       - ursa-oscar-api
 
   ursa-oscar-web:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-web:${URSA_OSCAR_WEB_IMAGE_VERSION:-1.1.13}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-web:${URSA_OSCAR_WEB_IMAGE_VERSION:-1.1.14}
     container_name: ursa-oscar-web
     networks:
       - kairos-net
@@ -80,7 +80,7 @@ services:
     restart: unless-stopped
 
   ursa-oscar-watcher:
-    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-watcher:${URSA_OSCAR_WATCHER_IMAGE_VERSION:-1.1.13}
+    image: ${DOCKERHUB_USER:-brain40}/ursa-oscar-watcher:${URSA_OSCAR_WATCHER_IMAGE_VERSION:-1.1.14}
     container_name: ursa-oscar-watcher
     environment:
       # Phase 4 Ticket 3 — async watcher loop. Polls the bind-mounted

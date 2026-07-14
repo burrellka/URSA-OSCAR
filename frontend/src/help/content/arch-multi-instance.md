@@ -27,7 +27,7 @@ Shared safely:
 
 - The docker host
 - The Docker network (`kairos-net`)
-- The Docker images themselves (each instance can reference the same `brain40/ursa-oscar-*:1.1.13` images)
+- The Docker images themselves (each instance can reference the same `brain40/ursa-oscar-*:1.1.14` images)
 - The reverse proxy (one nginx / Cloudflare tunnel can route to multiple instances)
 
 ## Compose layout for two instances

@@ -167,6 +167,44 @@ The AI proxy's HTTP read timeout is configurable per provider at **Settings → 
 
 If you hit "network_error" or a hung request against a local LLM, first check whether the model is still generating (LocalAI logs, `nvidia-smi`, etc.) before increasing the timeout. A model that's still working can be given more time; a model that's stuck won't complete faster with a longer timeout.
 
+## The output-token cap and the empty-answer trap (as of 1.1.14)
+
+The counterpart to the read timeout is the **output-token cap** — the ceiling on how many tokens the model may generate for one answer. Configure it at **Settings → AI Assistant → Max output tokens**. Defaults: **4000 for Local LLM**; **the provider's own default for cloud** (blank — URSA doesn't impose a cap, so a legitimately long cloud answer isn't truncated). Claude's own default stays 4096, overridable.
+
+Why local *must* have a generous cap: reasoning-mode models (Gemma-4, Qwen3, DeepSeek-R1) stream a hidden **reasoning channel** — chain-of-thought — that shares the *same* output budget as the answer, and the model spends it *before* the first answer token. If the cap is too small, the round hits the limit mid-thought (`finish_reason = length`) and **the answer never starts** — you get an HTTP 200 with a blank bubble. It looks random (a longer reasoning spike on one question, not another) but it's deterministic budget pressure, and a fat tool result makes it worse (more to reason about → longer reasoning). Before 1.1.14 URSA sent *no* `max_tokens` on local calls at all, so whatever small default your LocalAI/llama.cpp server applied was the ceiling.
+
+Three layers guard against it now:
+
+1. **A generous cap is always sent to local servers** (4000 by default) so reasoning + answer both fit. If you still see blank or cut-off answers, raise it.
+2. **The per-turn line flags `⚠ truncated`** whenever `finish_reason = length`, so a truncation is never silent. If you see it, raise Max output tokens (or lower the model's reasoning effort at the LocalAI side — a reasoning-budget knob caps the thinking at the source, the highest-leverage fix if your endpoint exposes it).
+3. **Reasoning-as-answer fallback**: if a turn finishes with only a reasoning trail and no answer text, URSA renders the reasoning as the answer instead of a blank bubble — partial thinking beats nothing.
+
+## Per-turn observability (as of 1.1.14)
+
+You can't cut what you can't see. Every completed assistant turn now shows a small **per-turn line** underneath it:
+
+```
+~5,657p + 775c  ·  26.3s  ·  gemma-4-26b-a4b   ⚠ truncated
+```
+
+- **tokens** — prompt (`p`) + completion (`c`). Real counts when the provider returns a `usage` object; a `~`-prefixed `chars/4` estimate when it doesn't (many local servers don't emit usage unless asked — URSA now asks, via `stream_options.include_usage`, but not all honor it).
+- **elapsed** — wall-clock for the whole turn, including any tool loop.
+- **model** — the model id that actually ran.
+- **⚠ truncated** — only when the output cap was hit (see above).
+
+Click the line to expand the **context breakdown** — the estimated token cost of what filled the model's context this turn, split into buckets:
+
+```
+used get_nightly_summary, get_trend
+context (est.): system 3,980 · tools 1,020 · tool results 298 · history 240 · total 5,538
+2 tool-loop rounds
+prompt cache: 3,400 tokens reused
+```
+
+This is the single most useful artifact for a slow turn: it shows *which* bucket is the bloat — a fat `tool results`, a large `system` (a big custom prompt), a long `history` — instead of you inferring it from a slow spinner. The `tools used` line is the actual execution trace (grounding: a turn that answered but called zero tools is a red flag). `prompt cache` appears when the provider reports cache reuse — visible proof the stable-prefix / prompt cache (§ above) is working.
+
+The breakdown is the measurement that drives tool-payload trimming: cut where it points, not where you guess. Pattern per the Vitals/KAIROS per-turn-observability note.
+
 ## Reading the source
 
 If you want to verify any claim on this page byte-for-byte:

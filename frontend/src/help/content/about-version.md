@@ -4,6 +4,16 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
+**1.1.14** — AI request-path hardening: the empty-answer trap + per-turn observability. Audit-and-apply pass over URSA's AI path against the Vitals/KAIROS cross-project notes.
+
+The headline fix closes a silent failure mode on local reasoning models. URSA's OpenAI-compat adapter sent **no `max_tokens` at all** on streamed completions, so on a LocalAI / llama.cpp server whatever (often small) default the server applied was the ceiling. Reasoning-mode models (Gemma-4, Qwen3, DeepSeek-R1) stream a hidden chain-of-thought channel that shares the *same* output budget as the answer and spends it *before* the first answer token — so a too-small cap truncates mid-thought (`finish_reason=length`) and the answer never starts: HTTP 200, blank bubble, deterministic under budget pressure and worse with a fat tool result. The fix is layered: a new operator-tunable **Max output tokens** knob (Settings → AI Assistant) with per-family defaults — **4000 for local** (headroom for a long think plus a full answer), **the provider's own default for cloud** (blank/uncapped, so long cloud answers aren't regressed; Claude keeps 4096); plus `stream_options.include_usage` so local servers actually report token counts; plus a loud `MODEL_TRUNCATED` diagnostic and a `⚠ truncated` flag when the cap is hit; plus a reasoning-as-answer fallback so a reasoning-only turn renders the thinking instead of a blank.
+
+The second half is **per-turn observability** — you can't cut what you can't see. Every completed turn now shows a per-turn line (`~5,657p + 775c · 26.3s · gemma-4-26b`) that expands to a context breakdown (system / tools / tool results / history, `chars/4` estimates), the tools-used execution trace, the tool-loop round count, and — when the provider reports it — the prompt-cache reuse count (visible proof the 1.1.13 stable-prefix cache is working). New `ai_proxy/context_budget.py` computes the breakdown and normalizes both provider usage shapes (OpenAI `prompt_tokens`/`completion_tokens` and Claude `input_tokens`/`output_tokens`); the chat endpoint attaches the meta to the terminal `complete` event.
+
+Also part of this audit: the **SSE streaming / Cloudflare-524 note was checked and found already fully solved** in URSA (nginx `proxy_buffering off` + HTTP/1.1 + 300s read timeout since 0.9.1; app-side 5s keepalive + immediate pre-first-byte keepalive + `X-Accel-Buffering:no`; frontend `fetch`+`ReadableStream`) — measured, not assumed, so no change. The **tool-payload diet** is deliberately deferred to a measured 1.1.15 follow-up: the new breakdown is what tells us which tool results are the bloat, so the trim is a measurement instead of a guess.
+
+Reference: Vitals `docs/local-model-token-diet-for-sibling-devs.md` + `docs/per-turn-observability-for-sibling-devs.md` + `docs/sse-streaming-for-sibling-devs.md` (read-only cross-project references — URSA implements its own version). Builds on 1.1.12 (progressive disclosure) and 1.1.13 (stable-prefix caching): the breakdown surfaces the token math both of those were tuning blind.
+
 **1.1.13** — Stable-prefix caching for the AI proxy system prompt. Second-turn latency drops sharply on llama.cpp / LocalAI when its cross-request prefix cache is on.
 
 llama.cpp (and every runtime that inherits its prefix / KV cache) reuses the KV state of the leading byte-identical run of tokens across requests. The match starts at position 0 and stops at the first differing byte — so anything volatile at the FRONT of the system prompt (a clock, a live location, a per-turn UUID) invalidates the cache for everything behind it. URSA's system prompt was almost all stable, but ended with a `Current viewing: <navigation state>` line that changed when the operator moved between Daily View / Trends / a specific night. That one volatile tail was near the front of the assembled prompt in 1.1.12 because the tool index (also stable) was appended AFTER it. Every turn re-read every byte after the volatile line — the persona template, the user profile, the tool index. On a Gemma-4-class CPU box this was a real chunk of TTFT.
@@ -118,7 +128,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.1.10** — Multi-EVE session clustering fix; AHI=0 on multi-mask-on nights
 - **1.1.11** — Operator-tunable AI request timeout + Help topic documenting model-context contents
 - **1.1.12** — Progressive tool disclosure (KAIROS pattern) — cuts per-turn tool tax by ~2/3
-- **1.1.13** — Stable-prefix caching (KAIROS D74) — reorders system prompt so llama.cpp / LocalAI's cross-request KV cache hits (this release)
+- **1.1.13** — Stable-prefix caching (KAIROS D74) — reorders system prompt so llama.cpp / LocalAI's cross-request KV cache hits
+- **1.1.14** — AI empty-answer trap (local max_tokens default + operator knob) + per-turn observability (token line + context breakdown + truncation flag) (this release)
 
 ## How to check the running version
 
