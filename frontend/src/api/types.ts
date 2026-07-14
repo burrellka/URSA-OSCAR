@@ -342,6 +342,12 @@ export interface AiMaskedConfig {
   // that default actually resolves to (300s for local, 120s cloud).
   timeout_seconds: number | null;
   effective_timeout_seconds: number;
+  // 1.1.14 — operator's stored output-token cap. null = "use provider-
+  // family default"; effective_max_output_tokens reveals what that
+  // resolves to (4000 for local; null for cloud = the provider's own
+  // large default, so long cloud answers aren't truncated).
+  max_output_tokens: number | null;
+  effective_max_output_tokens: number | null;
   api_key_set: boolean;
   api_keys_set: Record<string, boolean>;
 }
@@ -355,6 +361,7 @@ export interface AiConfigPatch {
   proxy_endpoint_url?: string | null;
   custom_system_prompt?: string | null;
   timeout_seconds?: number | null;
+  max_output_tokens?: number | null;
   api_key?: string;  // never returned, only sent
 }
 
@@ -371,6 +378,35 @@ export type AiStreamEventType =
 export interface AiStreamEvent {
   event_type: AiStreamEventType;
   payload: Record<string, unknown>;
+}
+
+/** 1.1.14 — per-turn observability meta, attached to the terminal
+ *  `complete` event's payload (and to a MODEL_TRUNCATED error). Powers
+ *  the per-turn line + expandable context breakdown under a message.
+ *  All token buckets are chars/4 estimates; `tokens.estimated` is true
+ *  when the provider returned no usage and we fell back to the estimate. */
+export interface AiTurnMeta {
+  model: string | null;
+  provider_id: string | null;
+  rounds: number;
+  elapsed_ms: number;
+  finish_reason: string | null;
+  tools_used: string[];
+  tokens: {
+    prompt: number | null;
+    completion: number | null;
+    total: number | null;
+    estimated: boolean;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
+  breakdown: {
+    system: number;
+    tools: number;
+    tool_results: number;
+    history: number;
+    total: number;
+  };
 }
 
 export interface AiTestResult {

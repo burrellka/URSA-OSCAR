@@ -45,6 +45,10 @@ export default function SettingsAi() {
     // input empty when None (server-side default). Blank = None → use
     // family default (300s for local, 120s for cloud).
     timeout_seconds: string;
+    // 1.1.14 — operator output-token override as a string (same pattern
+    // as timeout_seconds). Blank = None → use family default (4000 for
+    // local; the provider's own large default for cloud).
+    max_output_tokens: string;
     api_key: string;      // empty if not editing
   }>({
     enabled: false,
@@ -55,6 +59,7 @@ export default function SettingsAi() {
     proxy_endpoint_url: '',
     custom_system_prompt: '',
     timeout_seconds: '',
+    max_output_tokens: '',
     api_key: '',
   });
 
@@ -99,6 +104,10 @@ export default function SettingsAi() {
           // as the placeholder so they know what will actually apply.
           timeout_seconds:
             cfg.timeout_seconds != null ? String(cfg.timeout_seconds) : '',
+          // 1.1.14 — empty when the operator hasn't set a cap; the
+          // effective value is shown as the placeholder.
+          max_output_tokens:
+            cfg.max_output_tokens != null ? String(cfg.max_output_tokens) : '',
           api_key: '',
         });
       })
@@ -229,6 +238,19 @@ export default function SettingsAi() {
           );
         }
         patch.timeout_seconds = parsed;
+      }
+      // 1.1.14 — max output tokens: same send-or-omit pattern. Range
+      // guard 256-32000 matches the pydantic constraint.
+      if (edit.max_output_tokens !== '') {
+        const parsedMax = parseInt(edit.max_output_tokens, 10);
+        if (!Number.isFinite(parsedMax) || parsedMax < 256 || parsedMax > 32000) {
+          throw new Error(
+            'Max output tokens must be between 256 and 32000. '
+            + 'Leave blank to use the provider-family default '
+            + '(4000 for local LLMs; the provider default for cloud).',
+          );
+        }
+        patch.max_output_tokens = parsedMax;
       }
       if (edit.api_key) patch.api_key = edit.api_key;
       const updated = await api.patchAiConfig(patch);
@@ -503,6 +525,37 @@ export default function SettingsAi() {
               local LLMs, 120s for cloud providers). Raise this if
               thinking-mode local models on CPU need more time to warm up.
               Range 5-1800 seconds.
+            </span>
+          </div>
+
+          {/* 1.1.14 — operator-tunable output-token cap. Blank = family
+              default (4000 for local; the provider's own large default
+              for cloud). Range 256-32000; validated client-side. */}
+          <div className="field" style={{ marginBottom: '0.75rem' }}>
+            <label>Max output tokens</label>
+            <input
+              type="number"
+              min={256}
+              max={32000}
+              step={100}
+              value={edit.max_output_tokens}
+              onChange={(e) => setEdit({ ...edit, max_output_tokens: e.target.value })}
+              placeholder={
+                config
+                  ? (config.effective_max_output_tokens != null
+                      ? `${config.effective_max_output_tokens} (default)`
+                      : 'provider default (uncapped)')
+                  : ''
+              }
+            />
+            <span className="stat-sub" style={{ color: 'var(--text-muted)' }}>
+              The ceiling on how many tokens the model may generate per
+              answer. Leave blank for the family default (4000 for local
+              LLMs; the provider's own default for cloud). Reasoning-mode
+              local models (Gemma-4, Qwen3, DeepSeek-R1) spend part of this
+              budget on a hidden thinking channel before the answer starts,
+              so if answers come back blank or cut off ("⚠ truncated" on the
+              per-turn line), raise this. Range 256-32000.
             </span>
           </div>
 

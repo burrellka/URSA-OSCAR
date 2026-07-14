@@ -20,6 +20,7 @@ import type {
   AiMaskedConfig,
   AiMessage,
   AiStreamEvent,
+  AiTurnMeta,
 } from '../api/types';
 
 
@@ -59,6 +60,14 @@ interface DisplayMessage {
   /** Seconds the turn took once complete. Persisted on the message
    *  for the "took 12s" footer on past responses. */
   elapsed_seconds?: number;
+  /** 1.1.14 — per-turn observability meta from the `complete` event:
+   *  token counts, model, rounds, elapsed, tools-used, and the context
+   *  breakdown. Rendered as the per-turn line + expandable panel. */
+  meta?: AiTurnMeta;
+  /** 1.1.14 — set when the model produced only a reasoning trail and no
+   *  answer text (the reasoning-starve case). The bubble renders the
+   *  reasoning AS the answer instead of showing a blank. */
+  empty_answer?: boolean;
 }
 
 
@@ -400,9 +409,20 @@ function applyStreamEvent(
         );
         break;
       }
+      case 'complete': {
+        // 1.1.14 — capture the per-turn meta (tokens/model/rounds/elapsed/
+        // tools-used/breakdown) so MessageBubble can render the per-turn
+        // line + expandable context breakdown. `empty_answer` tells the
+        // bubble to fall back to rendering the reasoning trail as the
+        // answer (a reasoning-only turn) rather than showing a blank.
+        const meta = event.payload?.meta as AiTurnMeta | undefined;
+        if (meta) msg.meta = meta;
+        if (event.payload?.empty_answer) msg.empty_answer = true;
+        break;
+      }
       // 'tool_call_input' streams partial JSON. We don't render the input
       // mid-stream; the 'arguments' on `tool_call_complete` is enough.
-      // 'complete' and 'error' don't mutate the message.
+      // 'error' doesn't mutate the message (surfaced via streamError).
     }
 
     next[idx] = msg;
@@ -549,46 +569,102 @@ function MessageBubble({ message, now }: { message: DisplayMessage; now: number 
           message.content
         ) : (
           <div className="markdown-body">
-            {/* 1.1.3 — Reasoning trail for thinking-mode models (Qwen3,
-                DeepSeek-R1). Collapsible so the chain-of-thought is
-                discoverable but not visually dominant. Open by default
-                while in flight so the user sees progress; collapsed
-                once the final answer arrives. */}
-            {message.reasoning && (
-              <details
-                open={message.in_flight && !message.content}
-                style={{
-                  marginBottom: message.content ? '0.5rem' : 0,
-                  fontSize: '0.8125rem',
-                  color: 'var(--text-secondary, #6b7280)',
-                  borderLeft: '2px solid var(--border-secondary, #e5e7eb)',
-                  paddingLeft: '0.5rem',
-                }}
-              >
-                <summary style={{ cursor: 'pointer', fontStyle: 'italic', userSelect: 'none' }}>
-                  {message.in_flight && !message.content ? 'Reasoning…' : 'Reasoning'}
-                </summary>
-                <div style={{ whiteSpace: 'pre-wrap', marginTop: '0.25rem', opacity: 0.85 }}>
+            {message.content ? (
+              <>
+                {/* 1.1.3 — Reasoning trail for thinking-mode models
+                    (Qwen3, DeepSeek-R1). Collapsible above the answer so
+                    the chain-of-thought is discoverable but not
+                    visually dominant. */}
+                {message.reasoning && (
+                  <details
+                    style={{
+                      marginBottom: '0.5rem',
+                      fontSize: '0.8125rem',
+                      color: 'var(--text-secondary, #6b7280)',
+                      borderLeft: '2px solid var(--border-secondary, #e5e7eb)',
+                      paddingLeft: '0.5rem',
+                    }}
+                  >
+                    <summary style={{ cursor: 'pointer', fontStyle: 'italic', userSelect: 'none' }}>
+                      Reasoning
+                    </summary>
+                    <div style={{ whiteSpace: 'pre-wrap', marginTop: '0.25rem', opacity: 0.85 }}>
+                      {message.reasoning}
+                    </div>
+                  </details>
+                )}
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {message.content}
+                </ReactMarkdown>
+              </>
+            ) : message.in_flight ? (
+              /* Streaming, no answer text yet — show the live reasoning
+                 trail (open) or a plain "thinking…" placeholder. */
+              message.reasoning ? (
+                <details
+                  open
+                  style={{
+                    fontSize: '0.8125rem',
+                    color: 'var(--text-secondary, #6b7280)',
+                    borderLeft: '2px solid var(--border-secondary, #e5e7eb)',
+                    paddingLeft: '0.5rem',
+                  }}
+                >
+                  <summary style={{ cursor: 'pointer', fontStyle: 'italic', userSelect: 'none' }}>
+                    Reasoning…
+                  </summary>
+                  <div style={{ whiteSpace: 'pre-wrap', marginTop: '0.25rem', opacity: 0.85 }}>
+                    {message.reasoning}
+                  </div>
+                </details>
+              ) : (
+                <em style={{ opacity: 0.6 }}>thinking…</em>
+              )
+            ) : message.reasoning ? (
+              /* 1.1.14 — reasoning-starve fallback. The turn finished with
+                 no answer text but a non-empty reasoning trail. Render the
+                 reasoning AS the answer (better than a blank bubble) with a
+                 note explaining what happened. */
+              <div>
+                <div style={{
+                  fontSize: '0.75rem', fontStyle: 'italic',
+                  color: 'var(--text-muted, #6b7280)', marginBottom: '0.375rem',
+                }}>
+                  The model didn't produce a separate answer — showing its reasoning:
+                </div>
+                <div style={{ whiteSpace: 'pre-wrap', opacity: 0.9 }}>
                   {message.reasoning}
                 </div>
-              </details>
-            )}
-            {message.content ? (
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {message.content}
-              </ReactMarkdown>
-            ) : (
-              message.in_flight && !message.reasoning ? (
-                <em style={{ opacity: 0.6 }}>thinking…</em>
-              ) : null
-            )}
+              </div>
+            ) : null}
           </div>
         )}
       </div>
       {(message.tool_calls || []).map((tc) => (
         <ToolCallChip key={tc.id} call={tc} />
       ))}
-      {elapsedText && (
+      {/* 1.1.14 — per-turn line. While in flight, the live "Thinking… Xs"
+          indicator; once complete, the token/model/elapsed line + an
+          expandable context breakdown (from the `complete` event meta). */}
+      {message.in_flight ? (
+        elapsedText && (
+          <div
+            style={{
+              alignSelf: 'flex-start',
+              fontSize: '0.6875rem',
+              color: 'var(--text-muted, #6b7280)',
+              fontVariantNumeric: 'tabular-nums',
+              marginTop: '-0.125rem',
+              paddingLeft: '0.25rem',
+            }}
+            aria-live="polite"
+          >
+            {elapsedText}
+          </div>
+        )
+      ) : message.meta ? (
+        <PerTurnLine meta={message.meta} />
+      ) : elapsedText ? (
         <div
           style={{
             alignSelf: 'flex-start',
@@ -598,12 +674,85 @@ function MessageBubble({ message, now }: { message: DisplayMessage; now: number 
             marginTop: '-0.125rem',
             paddingLeft: '0.25rem',
           }}
-          aria-live={message.in_flight ? 'polite' : 'off'}
         >
           {elapsedText}
         </div>
-      )}
+      ) : null}
     </div>
+  );
+}
+
+
+/** 1.1.14 — the per-turn observability line + expandable context
+ *  breakdown, built from the `complete` event's meta. Mirrors the
+ *  Vitals/KAIROS per-turn line: tokens · elapsed · model, a tools-used
+ *  trail, a "⚠ truncated" flag when the output cap was hit, and a
+ *  collapsible token-by-bucket breakdown so a slow turn's bloat is
+ *  visible instead of inferred. */
+function PerTurnLine({ meta }: { meta: AiTurnMeta }) {
+  const t = meta.tokens;
+  const approx = t.estimated ? '~' : '';
+  const fmt = (n: number | null | undefined) =>
+    n == null ? '?' : n.toLocaleString();
+  const parts: string[] = [];
+  if (t.prompt != null || t.completion != null) {
+    parts.push(`${approx}${fmt(t.prompt)}p + ${fmt(t.completion)}c`);
+  }
+  parts.push(`${(meta.elapsed_ms / 1000).toFixed(1)}s`);
+  if (meta.model) parts.push(meta.model);
+
+  // Unique tool names in execution order (a model may call the same tool
+  // twice, or call load_tools then the real tool — collapse duplicates).
+  const uniqueTools: string[] = [];
+  for (const name of meta.tools_used || []) {
+    if (!uniqueTools.includes(name)) uniqueTools.push(name);
+  }
+  const truncated = meta.finish_reason === 'length';
+  const cacheRead = t.cache_read_input_tokens;
+
+  const muted = 'var(--text-muted, #6b7280)';
+  return (
+    <details
+      style={{
+        alignSelf: 'flex-start',
+        fontSize: '0.6875rem',
+        color: muted,
+        fontVariantNumeric: 'tabular-nums',
+        marginTop: '-0.125rem',
+        paddingLeft: '0.25rem',
+        maxWidth: '85%',
+      }}
+    >
+      <summary style={{ cursor: 'pointer', userSelect: 'none', listStyle: 'none' }}>
+        {parts.join('  ·  ')}
+        {truncated && (
+          <span style={{ color: 'var(--ahi-bad, #dc2626)', marginLeft: '0.375rem' }}>
+            ⚠ truncated
+          </span>
+        )}
+      </summary>
+      <div style={{ marginTop: '0.25rem', paddingLeft: '0.25rem', lineHeight: 1.6 }}>
+        {uniqueTools.length > 0 && (
+          <div>
+            <span style={{ opacity: 0.7 }}>used </span>
+            {uniqueTools.join(', ')}
+          </div>
+        )}
+        <div style={{ opacity: 0.7, marginTop: '0.125rem' }}>
+          context (est.): system {fmt(meta.breakdown.system)} · tools{' '}
+          {fmt(meta.breakdown.tools)} · tool results {fmt(meta.breakdown.tool_results)}{' '}
+          · history {fmt(meta.breakdown.history)} · total {fmt(meta.breakdown.total)}
+        </div>
+        {meta.rounds > 1 && (
+          <div style={{ opacity: 0.7 }}>{meta.rounds} tool-loop rounds</div>
+        )}
+        {cacheRead != null && cacheRead > 0 && (
+          <div style={{ opacity: 0.7 }}>
+            prompt cache: {fmt(cacheRead)} tokens reused
+          </div>
+        )}
+      </div>
+    </details>
   );
 }
 
