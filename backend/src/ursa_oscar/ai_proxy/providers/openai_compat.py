@@ -187,7 +187,25 @@ class OpenAiCompatAdapter(ProviderAdapter):
             # explicit here for cross-provider clarity (some compat
             # layers default differently).
             "tool_choice": "auto",
+            # 1.1.14 — ask the server to emit a usage object on the
+            # terminating chunk of a STREAMED completion. Without this,
+            # LocalAI / llama.cpp / vLLM stream tokens but never report
+            # prompt/completion token counts, so the per-turn observability
+            # line stays blank on exactly the local models where it's most
+            # useful. OpenAI/Gemini/Groq honor it too; harmless where a
+            # server already sends usage unprompted.
+            "stream_options": {"include_usage": True},
         }
+        # 1.1.14 — the empty-answer-trap fix. On a local reasoning model a
+        # too-small server default for max_tokens gets eaten by the hidden
+        # reasoning channel before the answer starts → blank 200. We send a
+        # generous cap for the local family (resolved in build_adapter).
+        # For cloud providers max_output_tokens is None here, so we OMIT
+        # max_tokens entirely and let the provider apply its own large
+        # default — sending a small number would truncate long cloud
+        # answers, a regression. See ai_proxy._effective_max_tokens.
+        if self.max_output_tokens is not None:
+            body["max_tokens"] = int(self.max_output_tokens)
         return body
 
     # ----- streaming response decode -----

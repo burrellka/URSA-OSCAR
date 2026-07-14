@@ -340,7 +340,12 @@ class ClaudeAdapter(ProviderAdapter):
 
         request = {
             "model": self.model,
-            "max_tokens": 4096,
+            # 1.1.14 — respect the operator's max_output_tokens override
+            # when set; otherwise keep the long-standing 4096 default.
+            # Anthropic REQUIRES max_tokens (unlike the OpenAI-compat path
+            # where it's optional), so there's always a concrete number
+            # here — the operator knob just lets it be raised or lowered.
+            "max_tokens": int(self.max_output_tokens) if self.max_output_tokens else 4096,
             # System prompt as a list of content blocks so we can
             # attach cache_control. The single-string form
             # (``system="..."``) is also valid Anthropic API but

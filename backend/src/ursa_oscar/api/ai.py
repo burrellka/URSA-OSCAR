@@ -89,6 +89,10 @@ class ConfigUpdate(BaseModel):
     # 1.1.11 — HTTP read timeout in seconds. None = use provider-family
     # default (300s local, 120s others). Range guarded on the store side.
     timeout_seconds: int | None = None
+    # 1.1.14 — completion output-token cap. None = use provider-family
+    # default (4000 local, provider's own for cloud). Range guarded on
+    # the store side (256-32000).
+    max_output_tokens: int | None = None
     api_key: str | None = None
 
 
@@ -112,6 +116,12 @@ class MaskedConfig(BaseModel):
     # or "current: 300s" hint alongside the input).
     timeout_seconds: int | None
     effective_timeout_seconds: int
+    # 1.1.14 — operator-tunable completion output-token cap. None means
+    # "use the family default"; effective_max_output_tokens tells the UI
+    # what the current live default is (None for cloud = provider's own
+    # default, a number for local).
+    max_output_tokens: int | None
+    effective_max_output_tokens: int | None
     api_key_set: bool
     # Per-provider api_key_set map so the Settings UI can show which
     # providers have keys stored without revealing which is selected.
@@ -157,8 +167,14 @@ def get_config(request: Request) -> MaskedConfig:
     # 1.1.11 — surface the effective timeout so the Settings UI can
     # show operators what "leave blank" actually resolves to for the
     # currently-selected provider. Mirrors the build_adapter logic.
-    from ..ai_proxy import _effective_timeout  # local import: avoid cycle at module load
+    from ..ai_proxy import (  # local import: avoid cycle at module load
+        _effective_max_tokens,
+        _effective_timeout,
+    )
     effective_to = int(_effective_timeout(cfg.provider_id or "", cfg.timeout_seconds))
+    effective_max_tok = _effective_max_tokens(
+        cfg.provider_id or "", cfg.max_output_tokens,
+    )
     return MaskedConfig(
         enabled=cfg.enabled,
         provider_id=cfg.provider_id,
@@ -169,6 +185,8 @@ def get_config(request: Request) -> MaskedConfig:
         custom_system_prompt=cfg.custom_system_prompt,
         timeout_seconds=cfg.timeout_seconds,
         effective_timeout_seconds=effective_to,
+        max_output_tokens=cfg.max_output_tokens,
+        effective_max_output_tokens=effective_max_tok,
         api_key_set=selected_key_set,
         api_keys_set=keys_set,
     )
@@ -565,6 +583,13 @@ async def chat(req: ChatRequest, request: Request):
             # heuristic check after the loop turns this into a friendly
             # diagnostic instead of rendering the broken `{` to the user.
             accumulated_text = ""
+            # 1.1.14 — accumulate the reasoning channel too. Reasoning
+            # events are still streamed straight through to the client
+            # (rendered as a separate trail); we keep a copy here only to
+            # reason about the empty-answer trap: a terminal turn with no
+            # answer text but a non-empty reasoning trail means the model
+            # spent its whole budget thinking and never emitted an answer.
+            accumulated_reasoning = ""
             stop_reason: str | None = None
             errored = False
 
@@ -607,6 +632,8 @@ async def chat(req: ChatRequest, request: Request):
                     if event.event_type == "text":
                         saw_text = True
                         accumulated_text += str(event.payload.get("text", ""))
+                    elif event.event_type == "reasoning":
+                        accumulated_reasoning += str(event.payload.get("text", ""))
                     elif event.event_type == "tool_call_complete":
                         pending_tool_calls.append(
                             AiToolCall(
@@ -663,6 +690,66 @@ async def chat(req: ChatRequest, request: Request):
                         },
                     ))
                     return
+
+                # 1.1.14 — the empty-answer trap. This terminal turn asked
+                # for no more tools, but produced no answer text either.
+                # Two distinct causes worth telling apart LOUDLY (a silent
+                # blank bubble is exactly what the observability note warns
+                # against):
+                #
+                #   (a) stop_reason == "length": the model hit the output
+                #       token cap. On a reasoning-mode local model the
+                #       hidden reasoning channel can eat the whole budget
+                #       before the answer starts. The fix is operator-side
+                #       — raise Settings → AI Assistant → Max output tokens
+                #       — so we say exactly that. (max_tokens is now sent
+                #       on local calls at all, which is the primary fix;
+                #       this diagnostic covers the case where even the
+                #       raised cap wasn't enough.)
+                #
+                #   (b) any other stop_reason with a non-empty reasoning
+                #       trail: the model "finished" having only produced
+                #       chain-of-thought. We DON'T error — the frontend
+                #       falls back to rendering the reasoning as the answer
+                #       (better than nothing). We just flag it on the
+                #       complete event so the client knows the answer body
+                #       is a reasoning fallback, not a real answer.
+                if not content_stripped and not saw_text:
+                    has_reasoning = bool(accumulated_reasoning.strip())
+                    if (stop_reason or "") == "length":
+                        logger.info(
+                            "ai/chat: empty answer with stop_reason=length "
+                            "(reasoning=%d chars); surfacing truncation "
+                            "diagnostic", len(accumulated_reasoning),
+                        )
+                        yield _sse_pack(AiStreamEvent(
+                            event_type="error",
+                            payload={
+                                "code": "MODEL_TRUNCATED",
+                                "message": (
+                                    "The response was cut off at the output "
+                                    "token limit before the model finished "
+                                    "its answer — a reasoning-mode model can "
+                                    "spend the whole budget thinking. Raise "
+                                    "Settings → AI Assistant → Max output "
+                                    "tokens (or lower the model's reasoning "
+                                    "effort), then ask again."
+                                ),
+                                "finish_reason": "length",
+                                "had_reasoning": has_reasoning,
+                            },
+                        ))
+                        return
+                    if has_reasoning and final_complete is not None:
+                        # Tag the complete event so the client renders the
+                        # reasoning as a fallback answer instead of a blank.
+                        final_complete = AiStreamEvent(
+                            event_type="complete",
+                            payload={
+                                **final_complete.payload,
+                                "empty_answer": True,
+                            },
+                        )
 
                 # Emit the captured final complete now (if any) so the
                 # client gets a clean end-of-stream signal.

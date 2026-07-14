@@ -49,6 +49,29 @@ def _effective_timeout(provider_id: str, configured: int | None) -> float:
     return float(DEFAULT_TIMEOUT_SECONDS_CLOUD)
 
 
+# 1.1.14 — provider-family default for the completion output-token cap.
+# The empty-answer trap: reasoning-mode local models spend a big slice of
+# max_tokens on a hidden reasoning channel BEFORE the first answer token,
+# so a too-small server default truncates mid-thought and the answer is
+# blank on a 200. We MUST send a generous cap to local servers. Cloud
+# providers already default to a large cap; sending a small one would
+# REGRESS long cloud answers, so the cloud family default is None (omit
+# max_tokens and let the provider decide). Claude keeps its own 4096.
+DEFAULT_MAX_TOKENS_LOCAL = 4000
+
+
+def _effective_max_tokens(provider_id: str, configured: int | None) -> int | None:
+    """Return the completion output-token cap. Operator override wins.
+    Otherwise: local gets a generous default (the reasoning-starve fix);
+    every other provider gets None so the adapter omits max_tokens and
+    the provider's own (large) default applies."""
+    if configured is not None:
+        return int(configured)
+    if provider_id == "local":
+        return DEFAULT_MAX_TOKENS_LOCAL
+    return None
+
+
 def build_adapter(provider_id: str, config_dict: dict, api_key: str | None):
     """Pick the right adapter class for a provider id and wire it with
     the operator's stored config + decrypted API key. Returns ``None``
@@ -69,6 +92,9 @@ def build_adapter(provider_id: str, config_dict: dict, api_key: str | None):
     timeout = _effective_timeout(
         provider_id, config_dict.get("timeout_seconds"),
     )
+    max_tokens = _effective_max_tokens(
+        provider_id, config_dict.get("max_output_tokens"),
+    )
 
     cls = ClaudeAdapter if preset.adapter == "claude" else OpenAiCompatAdapter
     return cls(
@@ -77,4 +103,5 @@ def build_adapter(provider_id: str, config_dict: dict, api_key: str | None):
         model=model,
         extra_headers=headers,
         timeout_seconds=timeout,
+        max_output_tokens=max_tokens,
     )

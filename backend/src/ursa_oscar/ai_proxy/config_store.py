@@ -53,6 +53,24 @@ class AiProxyConfig(BaseModel):
     # 1800s / 30 min ceiling (above that is almost always a config bug
     # masking a real network hang).
     timeout_seconds: int | None = Field(default=None, ge=5, le=1800)
+    # 1.1.14 — operator-tunable output-token ceiling (max_tokens) for
+    # LLM completions. When None, the effective cap is chosen by
+    # build_adapter based on provider_id:
+    #   - Local LLM: 4000 — a hard cap MUST be sent to local servers.
+    #     Reasoning-mode models (Gemma-4, Qwen3, DeepSeek-R1) spend a
+    #     large share of the completion budget on a hidden reasoning
+    #     channel BEFORE the first answer token; with a too-small server
+    #     default the round hits the cap mid-thought (finish_reason=
+    #     "length") and the answer never starts → HTTP 200, blank bubble.
+    #     4000 leaves headroom for a long think plus a full analytical
+    #     answer. See the empty-answer-trap note.
+    #   - All other providers: None → we omit max_tokens and let the
+    #     provider apply its own (large) default, so a legitimately long
+    #     cloud answer isn't truncated. Claude keeps its 4096 default.
+    # Range guard: 256 minimum (below that even a short answer risks the
+    # reasoning-starve trap), 32000 ceiling (above any real chat answer;
+    # a bigger number is almost always a misconfiguration).
+    max_output_tokens: int | None = Field(default=None, ge=256, le=32000)
     # Forward-compat: extra provider-specific config (e.g., temperature)
     # without bumping the schema. Currently unused.
     extra: dict[str, Any] = Field(default_factory=dict)

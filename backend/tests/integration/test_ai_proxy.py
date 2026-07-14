@@ -28,6 +28,7 @@ from cryptography.fernet import Fernet
 
 from ursa_oscar.ai_proxy import (
     PRESETS,
+    AiMessage,
     ClaudeAdapter,
     OpenAiCompatAdapter,
     build_adapter,
@@ -253,6 +254,103 @@ def test_build_adapter_uses_preset_defaults_when_config_blank():
     # Should fall back to preset default endpoint + first model.
     assert a.endpoint == "https://api.openai.com/v1"
     assert a.model == "gpt-4o"
+
+
+# -------------------------------------------------------------------------
+# 1.1.14 — empty-answer trap: max_tokens + include_usage.
+# -------------------------------------------------------------------------
+
+
+def test_effective_max_tokens_local_gets_generous_default():
+    """Local family MUST get a concrete generous cap — the reasoning-
+    starve fix. Cloud families get None so the provider's own (large)
+    default applies and long cloud answers aren't truncated."""
+    from ursa_oscar.ai_proxy import (
+        DEFAULT_MAX_TOKENS_LOCAL,
+        _effective_max_tokens,
+    )
+
+    assert _effective_max_tokens("local", None) == DEFAULT_MAX_TOKENS_LOCAL
+    assert DEFAULT_MAX_TOKENS_LOCAL >= 3000  # headroom for reasoning + answer
+    # Cloud families omit the cap (None) rather than imposing a small one.
+    assert _effective_max_tokens("openai", None) is None
+    assert _effective_max_tokens("gemini", None) is None
+    assert _effective_max_tokens("claude", None) is None
+    # Operator override wins for ANY provider.
+    assert _effective_max_tokens("local", 1200) == 1200
+    assert _effective_max_tokens("openai", 8000) == 8000
+
+
+def test_build_adapter_sets_max_output_tokens_by_family():
+    """build_adapter resolves the family default onto the adapter so the
+    request builder can read self.max_output_tokens."""
+    local = build_adapter("local", {"model": "gemma-4"}, None)
+    assert local is not None
+    assert local.max_output_tokens == 4000
+
+    cloud = build_adapter("openai", {"model": "gpt-4o"}, "sk-test")
+    assert cloud is not None
+    assert cloud.max_output_tokens is None
+
+    override = build_adapter(
+        "local", {"model": "gemma-4", "max_output_tokens": 2000}, None,
+    )
+    assert override is not None
+    assert override.max_output_tokens == 2000
+
+
+def test_openai_compat_body_requests_usage_and_omits_uncapped_max_tokens():
+    """The streamed body always asks for usage (so the per-turn token
+    line can populate on LocalAI), and only carries max_tokens when a
+    cap is set — a cloud adapter with max_output_tokens=None must NOT
+    send max_tokens (that would truncate long cloud answers)."""
+    cloud = OpenAiCompatAdapter(
+        api_key="sk-test", endpoint="https://api.openai.com/v1",
+        model="gpt-4o", max_output_tokens=None,
+    )
+    body = cloud._build_request(
+        messages=[AiMessage(role="user", content="hi")],
+        tools=[], system_prompt="sys",
+    )
+    assert body["stream"] is True
+    assert body["stream_options"] == {"include_usage": True}
+    assert "max_tokens" not in body
+
+
+def test_openai_compat_body_sends_max_tokens_when_capped():
+    """A local adapter carries the resolved cap as max_tokens — the
+    primary empty-answer-trap fix (a local server otherwise applies its
+    own possibly-tiny default and the reasoning channel starves the
+    answer)."""
+    local = OpenAiCompatAdapter(
+        api_key=None, endpoint="http://localai:8080/v1",
+        model="gemma-4", max_output_tokens=4000,
+    )
+    body = local._build_request(
+        messages=[AiMessage(role="user", content="how did I sleep")],
+        tools=[], system_prompt="sys",
+    )
+    assert body["max_tokens"] == 4000
+    assert body["stream_options"] == {"include_usage": True}
+
+
+def test_config_store_max_output_tokens_range_guarded(tmp_path):
+    """The operator knob is range-guarded like timeout_seconds — a value
+    below the floor or above the ceiling is rejected at the schema."""
+    import pytest
+    from pydantic import ValidationError
+    from ursa_oscar.ai_proxy.config_store import AiProxyConfig
+
+    # In-range values accepted.
+    assert AiProxyConfig(max_output_tokens=4000).max_output_tokens == 4000
+    assert AiProxyConfig(max_output_tokens=256).max_output_tokens == 256
+    # None (use family default) accepted.
+    assert AiProxyConfig(max_output_tokens=None).max_output_tokens is None
+    # Out-of-range rejected.
+    with pytest.raises(ValidationError):
+        AiProxyConfig(max_output_tokens=10)
+    with pytest.raises(ValidationError):
+        AiProxyConfig(max_output_tokens=100_000)
 
 
 # -------------------------------------------------------------------------

@@ -127,6 +127,7 @@ class ProviderAdapter(ABC):
         model: str,
         extra_headers: dict | None = None,
         timeout_seconds: float | None = None,
+        max_output_tokens: int | None = None,
         **kwargs: Any,
     ) -> None:
         self.api_key = api_key
@@ -142,6 +143,15 @@ class ProviderAdapter(ABC):
         # before construction, so None should only appear in test
         # setups that instantiate adapters directly.
         self.timeout_seconds = timeout_seconds
+        # 1.1.14 — completion output-token ceiling (max_tokens). Concrete
+        # adapters send this to the provider so a reasoning-mode local
+        # model can't spend its whole budget on the hidden reasoning
+        # channel and truncate before the answer starts (the empty-answer
+        # trap). None means "omit max_tokens and let the provider apply
+        # its own default" — build_adapter() resolves this to a generous
+        # number for the local family and None for cloud. See
+        # ai_proxy._effective_max_tokens.
+        self.max_output_tokens = max_output_tokens
 
     @abstractmethod
     async def chat(
