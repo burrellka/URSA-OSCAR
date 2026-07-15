@@ -24,6 +24,62 @@ from typing import Any
 
 import httpx
 
+from ..analytics.metric_resolver import (
+    known_log_types,
+    known_metric_aliases,
+    known_nightly_metrics,
+)
+
+
+# -------------------------------------------------------------------------
+# 1.1.15 — the metric vocabulary, DERIVED from the resolver.
+#
+# The bug this fixes: every ``metric`` parameter was declared as a bare
+# ``{"type": "string"}`` with no enumeration, while metric_resolver.py held
+# the real list of 25 valid names. Two independently hand-maintained lists
+# that nothing kept in sync. Asked for an AHI trend, the model guessed the
+# word every clinician uses — ``ahi`` — the resolver rejected it (the real
+# name is ``total_ahi``), and the turn burned an entire extra tool round
+# (~20s on a local reasoning model) recovering from a guess the schema
+# should never have allowed.
+#
+# Building the text from ``known_nightly_metrics()`` at import time makes
+# the schema physically incapable of drifting from the validator — add
+# column #26 to _NIGHTLY_NUMERIC_COLUMNS and every tool that takes a metric
+# advertises it on the next boot, for free.
+#
+# NOT a JSON-Schema ``enum``, deliberately: ``metric`` legitimately accepts
+# manual-log composites (``medication:melatonin:dose``), and an enum of the
+# nightly columns would make "trend my melatonin intake" unexpressible.
+# An enumerated description steers without narrowing the contract.
+#
+# Cost is ~160 tokens, carried once per tool (secondary params point at the
+# primary rather than repeat it) and only when that tool's group is loaded.
+# Against a wasted 20s round-trip that trade isn't close.
+# -------------------------------------------------------------------------
+
+
+def _build_metric_vocabulary() -> str:
+    nightly = ", ".join(known_nightly_metrics())
+    log_types = "/".join(known_log_types())
+    alias_note = " ".join(
+        f"Overall AHI is '{canonical}' (not '{alias}')."
+        for alias, canonical in sorted(known_metric_aliases().items())
+    )
+    return (
+        # Plain ASCII on purpose: this string is JSON-encoded into a tool
+        # schema and read by whatever tokenizer the operator's local model
+        # ships with. There is no upside to a fancy dash here.
+        f"Either a bare nightly metric, one of: {nightly}. {alias_note} "
+        f"Or a manual-log metric shaped 'log_type:filter:field', where "
+        f"log_type is one of {log_types} "
+        f"(e.g. 'medication:melatonin:dose', 'symptom:headache:severity', "
+        f"'alertness:morning:score')."
+    )
+
+
+METRIC_VOCABULARY = _build_metric_vocabulary()
+
 logger = logging.getLogger(__name__)
 
 
@@ -200,8 +256,8 @@ TOOL_DESCRIPTORS: list[dict] = [
                         "items": {"type": "string"},
                         "description": (
                             "Optional list of metric names. Defaults to a "
-                            "sensible set if omitted. Examples: total_ahi, "
-                            "median_pressure, p95_leak."
+                            "sensible set if omitted. Each entry: "
+                            + METRIC_VOCABULARY
                         ),
                     },
                 },
@@ -230,13 +286,14 @@ TOOL_DESCRIPTORS: list[dict] = [
                 "properties": {
                     "metric_a": {
                         "type": "string",
+                        "description": "First metric. " + METRIC_VOCABULARY,
+                    },
+                    "metric_b": {
+                        "type": "string",
                         "description": (
-                            "Bare nightly_summary column (e.g., 'total_ahi') "
-                            "OR 'log_type:filter:field' for manual logs "
-                            "(e.g., 'medication:melatonin:taken')."
+                            "Second metric. Same vocabulary as metric_a."
                         ),
                     },
-                    "metric_b": {"type": "string"},
                     "start_date": {"type": "string"},
                     "end_date": {"type": "string"},
                     "lag_days": {
@@ -276,18 +333,14 @@ TOOL_DESCRIPTORS: list[dict] = [
                 "properties": {
                     "target_metric": {
                         "type": "string",
-                        "description": (
-                            "Outcome to explain. Same naming as "
-                            "analyze_correlation — bare nightly column "
-                            "(e.g., 'total_ahi') OR 'log_type:filter:field'."
-                        ),
+                        "description": "Outcome to explain. " + METRIC_VOCABULARY,
                     },
                     "predictor_metrics": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": (
                             "2-5 candidate predictors to test simultaneously. "
-                            "Same naming as target_metric."
+                            "Same vocabulary as target_metric."
                         ),
                     },
                     "start_date": {"type": "string"},
@@ -377,16 +430,13 @@ TOOL_DESCRIPTORS: list[dict] = [
                 "properties": {
                     "target_metric": {
                         "type": "string",
-                        "description": (
-                            "Outcome to predict. Bare nightly column "
-                            "OR 'log_type:filter:field' for manual logs."
-                        ),
+                        "description": "Outcome to predict. " + METRIC_VOCABULARY,
                     },
                     "predictor_metrics": {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": (
-                            "2-6 factors. Same naming as target_metric."
+                            "2-6 factors. Same vocabulary as target_metric."
                         ),
                     },
                     "training_start_date": {"type": "string"},
@@ -435,14 +485,13 @@ TOOL_DESCRIPTORS: list[dict] = [
                 "properties": {
                     "metric_a": {
                         "type": "string",
-                        "description": (
-                            "Hypothesized cause. Same naming as "
-                            "analyze_correlation."
-                        ),
+                        "description": "Hypothesized cause. " + METRIC_VOCABULARY,
                     },
                     "metric_b": {
                         "type": "string",
-                        "description": "Hypothesized effect.",
+                        "description": (
+                            "Hypothesized effect. Same vocabulary as metric_a."
+                        ),
                     },
                     "start_date": {"type": "string"},
                     "end_date": {"type": "string"},
@@ -480,7 +529,10 @@ TOOL_DESCRIPTORS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "metric": {"type": "string"},
+                    "metric": {
+                        "type": "string",
+                        "description": "The metric to trend. " + METRIC_VOCABULARY,
+                    },
                     "start_date": {"type": "string"},
                     "end_date": {"type": "string"},
                     "projection_days": {

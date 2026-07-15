@@ -6,13 +6,14 @@ in the nightly_summary table, the manual_logs table, or is computed.
 
 Naming convention:
 
-  Bare column name → a column of ``nightly_summary``. Examples:
-      "total_ahi", "obstructive_ahi", "central_ahi", "hypopnea_index",
-      "rera_index", "p95_pressure", "median_pressure", "p995_pressure",
-      "p95_leak", "median_leak", "minutes_in_apnea",
-      "minutes_over_leak_redline", "large_leak_pct", "total_time_minutes",
-      "session_count", "min_pressure_setting", "max_pressure_setting",
-      "epr_level", "ramp_time_minutes".
+  Bare column name → a column of ``nightly_summary``. The authoritative
+  list is ``_NIGHTLY_NUMERIC_COLUMNS`` below; call
+  ``known_nightly_metrics()`` to read it. Do NOT re-type the list in a
+  docstring, a tool schema, or a UI dropdown — 1.1.15 fixed a bug caused
+  by exactly that (the AI's tool schema described ``metric`` as a bare
+  string, the model guessed "ahi", and the resolver rejected it because
+  the real name is "total_ahi"). Anything that needs to tell a human or a
+  model what the valid names are must derive them from here.
 
   ``log_type:filter:field`` → a manual_logs aggregation. The string is
   parsed left-to-right:
@@ -63,6 +64,20 @@ _NIGHTLY_NUMERIC_COLUMNS = frozenset({
     "temperature_celsius",
 })
 
+# 1.1.15 — natural-language synonyms an LLM (or a human) is likely to
+# reach for, mapped to the canonical column. Kept deliberately TINY and
+# unambiguous: "ahi" means total AHI to every clinician and every model,
+# so accepting it is correct API design, not sloppiness. Ambiguous words
+# are NOT aliased on purpose — "leak" and "pressure" could each mean the
+# median or the p95 variant, and silently picking one for the caller
+# would be a data-integrity bug, not a convenience. The real fix for
+# guessing is the derived vocabulary in the tool schema (see
+# ai_proxy/tools.py); this map is the safety net for the one case where
+# the guess is unambiguous.
+_METRIC_ALIASES = {
+    "ahi": "total_ahi",
+}
+
 # Default numeric field per log_type when the user omits :field.
 _DEFAULT_FIELDS = {
     "medication": "dose",
@@ -96,11 +111,13 @@ def parse_metric_name(name: str) -> tuple[str, str | None, str | None]:
     Raises UnknownMetricError on malformed input.
     """
     if ":" not in name:
-        if name not in _NIGHTLY_NUMERIC_COLUMNS:
+        # 1.1.15 — resolve the unambiguous synonym first ("ahi" -> "total_ahi").
+        canonical = _METRIC_ALIASES.get(name.strip().lower(), name)
+        if canonical not in _NIGHTLY_NUMERIC_COLUMNS:
             raise UnknownMetricError(
                 f"Unknown nightly metric '{name}'. Valid: {sorted(_NIGHTLY_NUMERIC_COLUMNS)}"
             )
-        return (name, None, None)
+        return (canonical, None, None)
 
     parts = name.split(":", 2)
     log_type = parts[0]
@@ -237,8 +254,29 @@ def _json_get(raw: Any, key: str) -> Any:
 
 
 def known_nightly_metrics() -> list[str]:
-    """Return the sorted list of bare-name CPAP metrics for UI dropdowns."""
+    """Return the sorted list of bare-name CPAP metrics for UI dropdowns.
+
+    Also the source of truth the AI tool schemas derive their ``metric``
+    parameter description from — see ``ai_proxy/tools.py``. Anything that
+    enumerates valid metric names MUST call this rather than hand-copy the
+    list, or it will drift (which is the 1.1.15 bug).
+    """
     return sorted(_NIGHTLY_NUMERIC_COLUMNS)
+
+
+def known_log_types() -> list[str]:
+    """Return the manual-log types valid as the ``log_type`` segment of a
+    composite ``log_type:filter:field`` metric. Same no-hand-copying rule
+    as ``known_nightly_metrics``."""
+    return list(_DEFAULT_FIELDS)
+
+
+def known_metric_aliases() -> dict[str, str]:
+    """Return the accepted synonym -> canonical-name map (e.g.
+    ``{"ahi": "total_ahi"}``). Exposed so the tool-schema vocabulary can
+    tell the model the canonical name for a word it would otherwise
+    guess."""
+    return dict(_METRIC_ALIASES)
 
 
 def list_available_manual_metrics(db: DuckDBManager) -> list[str]:
