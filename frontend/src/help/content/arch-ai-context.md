@@ -205,6 +205,19 @@ This is the single most useful artifact for a slow turn: it shows *which* bucket
 
 The breakdown is the measurement that drives tool-payload trimming: cut where it points, not where you guess. Pattern per the Vitals/KAIROS per-turn-observability note.
 
+## Metric names the AI can use (as of 1.1.15)
+
+Anything that takes a `metric` — `get_trend`, `compare_periods`, `analyze_correlation`, `analyze_lag_correlation`, `analyze_multivariate_correlation`, `analyze_prediction` — accepts either:
+
+- **A bare nightly metric**: one of the 25 columns of `nightly_summary` (`total_ahi`, `central_ahi`, `obstructive_ahi`, `hypopnea_index`, `rera_index`, `median_pressure`, `p95_leak`, `cheyne_stokes_pct`, …). Overall AHI is **`total_ahi`**, not `ahi` — though `ahi` is accepted as an alias.
+- **A manual-log composite**: `log_type:filter:field`, where log_type is one of `medication` / `symptom` / `alertness` / `sleep_environment` / `freeform`. Examples: `medication:melatonin:dose`, `symptom:headache:severity`, `alertness:morning:score`.
+
+The exact list is **generated from `metric_resolver.known_nightly_metrics()` at import time** and injected into each tool's parameter description, so what the model is told and what the API validates cannot drift apart. This page deliberately does not re-type the full list — that hand-copying *was* the 1.1.15 bug. `Settings → AI Assistant` isn't where you change it; add a column to `_NIGHTLY_NUMERIC_COLUMNS` and every tool picks it up.
+
+Why a description and not a JSON-Schema `enum`: an enum of the nightly columns would forbid the composite form, and "trend my melatonin intake" is a real question. The description steers without narrowing the contract.
+
+Cost: ~175 tokens, carried once per tool and only when that tool's group is loaded. It replaces a wasted tool round-trip (~20s on a local reasoning model) every time the model previously guessed a metric name wrong.
+
 ## Reading the source
 
 If you want to verify any claim on this page byte-for-byte:

@@ -4,6 +4,18 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
+**1.1.15** — The AI's metric vocabulary is now derived from its own source of truth. Fixes a tool-contract bug that cost a wasted tool round on every metric question.
+
+Found by 1.1.14's own per-turn instrument, which is the point of having built it. The tools-used trace on a live Gemma call showed `get_trend — error — Unknown nightly metric 'ahi'` followed by a silent retry: asked for an AHI trend, the model guessed the word every clinician uses (`ahi`), the resolver rejected it (the real column is `total_ahi`), and the turn burned an entire extra tool round recovering — roughly 20 seconds of wall-clock on a local reasoning model, spent on a guess the schema should never have permitted.
+
+The cause was structural, not a typo. `metric_resolver.py` held the real list of 25 nightly metrics while `tools.py` declared every metric parameter as a bare `{"type": "string"}` — two independently hand-maintained lists with nothing keeping them in sync. The resolver's own module docstring had drifted too (it omitted `median_epap`, `p995_leak`, `cheyne_stokes_pct`, `temperature_celsius`), which is the tell that hand-copying was the problem rather than any one list being wrong.
+
+The fix builds the vocabulary from `known_nightly_metrics()` at import time, so the schema is physically incapable of drifting from the validator — add a 26th column and every metric-taking tool advertises it on the next boot. It's an enumerated *description* rather than a JSON-Schema `enum` on purpose: `metric` legitimately accepts manual-log composites like `medication:melatonin:dose`, and an enum of the nightly columns would make "trend my melatonin intake" unexpressible. Applied to all 10 metric parameters across 6 tools — the full list on each tool's primary parameter, a pointer on the secondaries (both always load together, so paying twice is waste). A tiny `ahi → total_ahi` alias backs it up as a safety net; ambiguous words like `leak` and `pressure` are deliberately *not* aliased, since each could mean the median or p95 variant and silently choosing one would be a data-integrity bug. A 10-case drift test makes the whole bug class unreintroducible.
+
+Also: the `load_tools` chip reported `no data` on success (its envelope has no `data` key), now reads `activated get_trend, compare_periods`.
+
+**On the tool-payload diet that was queued for this release: it was measured and cancelled.** The 1.1.14 breakdown on a real call came back `system 1,701 · tools 666 · tool results 523 · history 23 · total 2,913`. Vitals' diet was justified because `tool_results` dominated a 17–19k-token call; URSA's is 523 tokens inside an already-lean 2,913-token request. Rounding floats there would have reclaimed ~100 tokens on a request using under 10% of the model's context — cutting the wrong thing, which is exactly what the note warns against. Measuring first is what turned a pointless release into a real one.
+
 **1.1.14** — AI request-path hardening: the empty-answer trap + per-turn observability. Audit-and-apply pass over URSA's AI path against the Vitals/KAIROS cross-project notes.
 
 The headline fix closes a silent failure mode on local reasoning models. URSA's OpenAI-compat adapter sent **no `max_tokens` at all** on streamed completions, so on a LocalAI / llama.cpp server whatever (often small) default the server applied was the ceiling. Reasoning-mode models (Gemma-4, Qwen3, DeepSeek-R1) stream a hidden chain-of-thought channel that shares the *same* output budget as the answer and spends it *before* the first answer token — so a too-small cap truncates mid-thought (`finish_reason=length`) and the answer never starts: HTTP 200, blank bubble, deterministic under budget pressure and worse with a fat tool result. The fix is layered: a new operator-tunable **Max output tokens** knob (Settings → AI Assistant) with per-family defaults — **4000 for local** (headroom for a long think plus a full answer), **the provider's own default for cloud** (blank/uncapped, so long cloud answers aren't regressed; Claude keeps 4096); plus `stream_options.include_usage` so local servers actually report token counts; plus a loud `MODEL_TRUNCATED` diagnostic and a `⚠ truncated` flag when the cap is hit; plus a reasoning-as-answer fallback so a reasoning-only turn renders the thinking instead of a blank.
@@ -129,7 +141,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.1.11** — Operator-tunable AI request timeout + Help topic documenting model-context contents
 - **1.1.12** — Progressive tool disclosure (KAIROS pattern) — cuts per-turn tool tax by ~2/3
 - **1.1.13** — Stable-prefix caching (KAIROS D74) — reorders system prompt so llama.cpp / LocalAI's cross-request KV cache hits
-- **1.1.14** — AI empty-answer trap (local max_tokens default + operator knob) + per-turn observability (token line + context breakdown + truncation flag) (this release)
+- **1.1.14** — AI empty-answer trap (local max_tokens default + operator knob) + per-turn observability (token line + context breakdown + truncation flag)
+- **1.1.15** — AI metric vocabulary derived from the resolver; kills the wasted tool round on metric questions (this release)
 
 ## How to check the running version
 
