@@ -440,6 +440,18 @@ function summarizeToolResult(
     const err = (result as Record<string, unknown>).error;
     return `error — ${typeof err === 'string' ? err.slice(0, 80) : 'unknown'}`;
   }
+  // 1.1.15 — load_tools (1.1.12's progressive-disclosure discovery tool)
+  // returns {ok, message, activated, unknown} with NO `data` key, so it
+  // fell straight through to the generic "no data" branch below and a
+  // SUCCESSFUL activation rendered as what looks like a failure. Report
+  // what it actually did.
+  if (name === 'load_tools') {
+    const r = result as { activated?: string[]; unknown?: string[] };
+    const parts: string[] = [];
+    if (r.activated?.length) parts.push(`activated ${r.activated.join(', ')}`);
+    if (r.unknown?.length) parts.push(`unknown: ${r.unknown.join(', ')}`);
+    return parts.join(' · ') || 'nothing to activate';
+  }
   const data = result?.data as Record<string, unknown> | undefined;
   if (!data) return 'no data';
   // Per-tool one-liners. Falls back to a generic key=value tail for any
