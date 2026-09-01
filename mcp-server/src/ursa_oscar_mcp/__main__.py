@@ -19,7 +19,19 @@ import uvicorn
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .server import mcp
+# 1.1.17 — configure logging BEFORE importing .server. Importing it runs
+# build_auth_provider() at module load, which is where the pre-registered
+# client is wired and persisted OAuth tokens are restored (with their log
+# lines). If logging is configured later (inside main()), every one of
+# those import-time INFO lines is dropped — the same invisible-logs trap
+# 1.1.16 fixed on the API side. Configure first so the restore is
+# observable ("Restored N access + M refresh token(s) ...").
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(name)s %(levelname)s %(message)s",
+)
+
+from .server import mcp  # noqa: E402 — must follow basicConfig (see above)
 
 
 async def _version_endpoint(request):  # noqa: ANN001 (Starlette handler)
@@ -41,10 +53,9 @@ async def _version_endpoint(request):  # noqa: ANN001 (Starlette handler)
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    )
+    # Logging is configured at module load (see top of file) so import-time
+    # lines from build_auth_provider are captured. basicConfig here would be
+    # a no-op anyway.
 
     # 1.1.16 — say at startup whether the inner-leg service token resolved,
     # and from where. The MCP→API 401 incident was hard to diagnose partly
