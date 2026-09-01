@@ -4,6 +4,16 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
+**1.1.17** — MCP OAuth sessions now survive a container restart. Fixes the re-authorize-on-every-redeploy annoyance that surfaced right after the 1.1.16 deploy.
+
+Distinct from 1.1.16, and a different auth leg. 1.1.16 fixed the *inner* leg (the MCP's service token to URSA's own API). This is the *outer* leg: the OAuth session between an external client (claude.ai, KAIROS) and the MCP. Right after redeploying 1.1.16, reconnecting KAIROS returned `token endpoint failed: HTTP 401 — invalid_grant: refresh token does not exist`.
+
+The cause was structural and predates 1.1.16 — any MCP restart triggered it. The MCP's OAuth provider extends the upstream `InMemoryOAuthProvider`, which holds every issued access and refresh token **in memory**. URSA persisted the registered OAuth *client* (since 1.1.5) but not the issued *tokens*, so a container restart wiped them. A client still holding a refresh token from before the restart would try to refresh, the freshly booted MCP had no record of it, and `/token` returned `invalid_grant`. The client then had to run a full re-authorization — on every redeploy, for every connector.
+
+1.1.17 persists the token tables to `/data/mcp_oauth_tokens.json` (atomic write, mode 0600, same `/data` trust boundary as the JWT secret and the DCR client store) and restores them on boot, so an already-connected client sails through a restart without re-authorizing. The restore applies three deliberate filters: expired tokens are never resurrected; association-map entries are only rebuilt when both ends survive (a refresh token whose access token expired is kept, exactly per the 1.1.6 refresh-outlives-access contract); and — the security-sensitive one — a token is dropped unless its client is currently loaded. That last filter preserves the 1.1.9 guarantee: with DCR off, clients that self-registered during the old open window are not reloaded, so their tokens die on restore rather than getting a second life through the persistence layer. Only genuinely OAuth-minted tokens are written; the static-bearer and operator-JWT paths synthesize their tokens per request and never touch disk.
+
+Operator notes: the MCP's `/data` bind mount must be read-write (it already needed to be for the DCR client store). If you were stuck reconnecting after the 1.1.16 deploy, this is why — and after 1.1.17 a one-time full re-add of the connector mints tokens that then persist. A complementary robustness improvement belongs on the client side (on `invalid_grant`, a client should fall back to a fresh authorization rather than surfacing the error), which is a note for the KAIROS dev, not an URSA change.
+
 **1.1.16** — Service tokens now renew themselves, and a backend 401 finally explains itself. Fixes an MCP/watcher authentication failure that struck after long uptime.
 
 The symptom: every `ursa.*` MCP tool from claude.ai and KAIROS started returning `{"ok":false,"error":"API error: 401","code":"ERROR"}` — both clients connected fine but every tool call failed. It was internal to URSA, not the connection: the MCP proxies each tool to URSA's own REST API with an auto-minted service token (the MCP opens no database of its own — ADR-003), and the API was rejecting that token.
@@ -159,7 +169,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.1.13** — Stable-prefix caching (KAIROS D74) — reorders system prompt so llama.cpp / LocalAI's cross-request KV cache hits
 - **1.1.14** — AI empty-answer trap (local max_tokens default + operator knob) + per-turn observability (token line + context breakdown + truncation flag)
 - **1.1.15** — AI metric vocabulary derived from the resolver; kills the wasted tool round on metric questions
-- **1.1.16** — Service tokens self-renew (no more MCP/watcher 401 after long uptime) + visible app logs + self-diagnosing backend 401 (this release)
+- **1.1.16** — Service tokens self-renew (no more MCP/watcher 401 after long uptime) + visible app logs + self-diagnosing backend 401
+- **1.1.17** — MCP OAuth tokens persist across restart; connected clients no longer re-authorize on every redeploy (this release)
 
 ## How to check the running version
 
