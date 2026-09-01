@@ -4,6 +4,22 @@ URSA-OSCAR ships as four Docker images that are versioned together. The version 
 
 ## Current version
 
+**1.1.16** — Service tokens now renew themselves, and a backend 401 finally explains itself. Fixes an MCP/watcher authentication failure that struck after long uptime.
+
+The symptom: every `ursa.*` MCP tool from claude.ai and KAIROS started returning `{"ok":false,"error":"API error: 401","code":"ERROR"}` — both clients connected fine but every tool call failed. It was internal to URSA, not the connection: the MCP proxies each tool to URSA's own REST API with an auto-minted service token (the MCP opens no database of its own — ADR-003), and the API was rejecting that token.
+
+The root cause was a startup-only renewal gap. The API mints a 90-day service token for the MCP and watcher and re-mints it at startup when it's within 7 days of expiry — but there was **no runtime renewal**. An API container that stays up longer than ~83 days (normal for a homelab) never gets that startup event, so the 90-day token simply lapses and every MCP/watcher call 401s until someone restarts the API. Worse, it was nearly undiagnosable: URSA configured no logging at all, so every app-level line — including `service token mcp: minted fresh` and the swallowed bootstrap errors — never reached `docker logs`; only HTTP access lines showed. A 90-day time bomb was ticking with the evidence suppressed.
+
+Three fixes:
+
+1. **Runtime token renewal.** A background task, spawned alongside the import worker, re-checks the service tokens every 6 hours and re-mints inside the 7-day window regardless of uptime. It's a cheap decode-and-compare on virtually every pass (a write happens once per ~83 days per service), it runs its file IO off the event loop, and a failing pass is logged and swallowed so the renewer outlives the thing it protects. "Restart the API every few months or the MCP breaks" becomes "it takes care of itself."
+
+2. **Visible logs.** URSA now attaches a log handler to its own package logger at startup, so mint/renewal/bootstrap events actually appear in `docker logs ursa-oscar-api`. This is what made the failure invisible; it won't be again.
+
+3. **A self-diagnosing 401.** The MCP now distinguishes, in its own logs and at startup, "no service token resolved" (anonymous — check the shared `/data` mount and that the API minted the token) from "token present but rejected" (a JWT-secret mismatch — delete `/data/service_tokens/mcp.jwt` and restart the API to re-mint), instead of all 15 tools surfacing the same opaque `API error: 401`.
+
+Operator note: if you hit this before upgrading, the immediate fix is `rm /data/service_tokens/mcp.jwt` on the host and restarting the API container — it re-mints a fresh token, which the MCP picks up on its next request (no MCP restart needed). After 1.1.16 the renewal loop prevents recurrence. Also worth cleaning up while you're in the compose: an `URSA_OSCAR_JWT_SECRET: null` (or `URSA_OSCAR_SECRET_KEY: null`) is ambiguous — either remove the line so the API uses its auto-generated `/data/jwt_secret`, or set an explicit identical value on both the api and mcp services.
+
 **1.1.15** — The AI's metric vocabulary is now derived from its own source of truth. Fixes a tool-contract bug that cost a wasted tool round on every metric question.
 
 Found by 1.1.14's own per-turn instrument, which is the point of having built it. The tools-used trace on a live Gemma call showed `get_trend — error — Unknown nightly metric 'ahi'` followed by a silent retry: asked for an AHI trend, the model guessed the word every clinician uses (`ahi`), the resolver rejected it (the real column is `total_ahi`), and the turn burned an entire extra tool round recovering — roughly 20 seconds of wall-clock on a local reasoning model, spent on a guess the schema should never have permitted.
@@ -142,7 +158,8 @@ The path to 1.0 is captured in the Docs/WIP/ build handovers in the repository. 
 - **1.1.12** — Progressive tool disclosure (KAIROS pattern) — cuts per-turn tool tax by ~2/3
 - **1.1.13** — Stable-prefix caching (KAIROS D74) — reorders system prompt so llama.cpp / LocalAI's cross-request KV cache hits
 - **1.1.14** — AI empty-answer trap (local max_tokens default + operator knob) + per-turn observability (token line + context breakdown + truncation flag)
-- **1.1.15** — AI metric vocabulary derived from the resolver; kills the wasted tool round on metric questions (this release)
+- **1.1.15** — AI metric vocabulary derived from the resolver; kills the wasted tool round on metric questions
+- **1.1.16** — Service tokens self-renew (no more MCP/watcher 401 after long uptime) + visible app logs + self-diagnosing backend 401 (this release)
 
 ## How to check the running version
 
