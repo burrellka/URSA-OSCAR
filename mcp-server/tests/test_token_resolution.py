@@ -83,3 +83,41 @@ def test_only_reads_mcp_jwt_not_watcher_jwt(tmp_path):
     (svc_dir / "watcher.jwt").write_text("watcher-token", encoding="utf-8")
     # No mcp.jwt — should be None despite a watcher.jwt sibling.
     assert client._resolve_api_token() is None
+
+
+# ---------------------------------------------------------------------------
+# 1.1.16 — the 401 diagnostic. A backend 401 must name its own cause in the
+# MCP logs instead of every tool surfacing an identical opaque "API error:
+# 401". This is the exact incident that motivated it.
+# ---------------------------------------------------------------------------
+
+
+def test_diagnose_401_reports_missing_token(tmp_path, caplog):
+    """No token resolved -> the log must say so and point at the /data mount,
+    not at a rejected credential."""
+    import logging
+    # No env, no file (isolate_env + fresh tmp_path).
+    with caplog.at_level(logging.ERROR, logger="ursa-oscar-mcp.client"):
+        client._diagnose_401("/api/v1/user-profile")
+    msg = caplog.text
+    assert "NO service token was resolved" in msg
+    assert "anonymously" in msg
+    # Must NOT claim the token was rejected — that would send the operator
+    # down the wrong path.
+    assert "REJECTED" not in msg
+
+
+def test_diagnose_401_reports_rejected_token(tmp_path, monkeypatch, caplog):
+    """A token WAS sent but the API 401'd it -> the log must say REJECTED and
+    give the delete-token-and-restart-api fix (secret mismatch is the usual
+    cause)."""
+    import logging
+    monkeypatch.setenv(client.API_TOKEN_ENV, "a-real-looking-but-rejected-jwt")
+    with caplog.at_level(logging.ERROR, logger="ursa-oscar-mcp.client"):
+        client._diagnose_401("/api/v1/user-profile")
+    msg = caplog.text
+    assert "REJECTED" in msg
+    assert "JWT-secret mismatch" in msg
+    assert "re-mints" in msg or "re-mint" in msg
+    # Must NOT tell the operator a token is missing when one was clearly sent.
+    assert "NO service token was resolved" not in msg

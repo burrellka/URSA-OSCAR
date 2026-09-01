@@ -45,6 +45,32 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+
+    # 1.1.16 — say at startup whether the inner-leg service token resolved,
+    # and from where. The MCP→API 401 incident was hard to diagnose partly
+    # because nothing reported the token state until a tool failed. Now the
+    # boot log answers "does this container even have a credential" up front.
+    from .client import _resolve_api_token, API_TOKEN_ENV  # local: avoid cycle
+    import os as _os
+    _startup_log = logging.getLogger("ursa-oscar-mcp")
+    if _os.environ.get(API_TOKEN_ENV, "").strip():
+        _startup_log.info(
+            "backend auth: using explicit %s env override", API_TOKEN_ENV,
+        )
+    elif _resolve_api_token() is not None:
+        _startup_log.info(
+            "backend auth: using auto-minted service token from the shared "
+            "/data volume (service_tokens/mcp.jwt)",
+        )
+    else:
+        _startup_log.error(
+            "backend auth: NO service token resolved — every tool call will "
+            "401. The MCP found neither %s nor a readable "
+            "service_tokens/mcp.jwt. Confirm the api and mcp containers share "
+            "the same /data mount and that the api minted the token.",
+            API_TOKEN_ENV,
+        )
+
     app = mcp.http_app(transport="sse")
 
     # 1.1.3 — append the /version route to the FastMCP-returned Starlette

@@ -81,14 +81,49 @@ def get_client(timeout: float = 30.0) -> httpx.Client:
     )
 
 
+def _diagnose_401(path: str) -> None:
+    """1.1.16 — make a backend 401 name its own cause in the MCP logs.
+
+    Before this, every tool surfaced the identical opaque ``API error: 401``
+    and the operator had to guess between two very different problems. The
+    MCP's own logs (basicConfig'd in __main__) now distinguish them, with
+    the fix attached. This is the exact incident that motivated it: the
+    inner-leg service token had gone stale and nothing said so.
+    """
+    if _resolve_api_token() is None:
+        logger.error(
+            "401 from the URSA API calling %s, and NO service token was "
+            "resolved. The MCP found neither the %s env var nor a readable "
+            "service_tokens/mcp.jwt on the shared /data volume, so it called "
+            "the API anonymously. Check that the api and mcp containers share "
+            "the same /data mount and that the api minted the token "
+            "(docker logs ursa-oscar-api | grep 'service token').",
+            path, API_TOKEN_ENV,
+        )
+    else:
+        logger.error(
+            "401 from the URSA API calling %s despite presenting a service "
+            "token — the API REJECTED it. This is almost always a JWT-secret "
+            "mismatch (the api and mcp containers must resolve the SAME "
+            "URSA_OSCAR_JWT_SECRET, or both fall back to the same "
+            "/data/jwt_secret file), or a token minted under an old secret. "
+            "Fix: delete /data/service_tokens/mcp.jwt and restart the api "
+            "container so it re-mints against the live secret.",
+            path,
+        )
+
+
 def api_get(path: str, params: dict[str, Any] | None = None, timeout: float = 30.0) -> Any:
     """GET the API and return the parsed JSON body.
 
     Raises httpx.HTTPStatusError on non-2xx; tools wrap that in the
-    {"ok": False, "code": "..."} envelope.
+    {"ok": False, "code": "..."} envelope. On a 401 we first log a
+    self-diagnosing line (see _diagnose_401) so the failure isn't opaque.
     """
     with get_client(timeout=timeout) as c:
         r = c.get(path, params=params)
+        if r.status_code == 401:
+            _diagnose_401(path)
         r.raise_for_status()
         return r.json()
 
@@ -97,5 +132,7 @@ def api_post(path: str, json_body: dict[str, Any] | None = None, timeout: float 
     """POST to the API. Used by trigger_import."""
     with get_client(timeout=timeout) as c:
         r = c.post(path, json=json_body)
+        if r.status_code == 401:
+            _diagnose_401(path)
         r.raise_for_status()
         return r.json()
