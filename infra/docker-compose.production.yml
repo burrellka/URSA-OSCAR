@@ -145,7 +145,10 @@ services:
   #     - "8085:8000"
   #   volumes:
   #     # EDIT THIS LINE for your platform (see comment block at top).
-  #     # MCP needs :rw to persist DCR-registered OAuth clients.
+  #     # MCP needs :rw (no :ro) to persist OAuth state on /data: the
+  #     # DCR client store (1.1.5) AND, as of 1.1.17, the issued-token
+  #     # store (/data/mcp_oauth_tokens.json) that lets connected clients
+  #     # survive a container restart without re-authorizing.
   #     - /srv/ursa-oscar/data:/data
   #   restart: unless-stopped
   #   depends_on:

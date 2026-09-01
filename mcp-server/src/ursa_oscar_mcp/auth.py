@@ -59,7 +59,7 @@ import time
 from pathlib import Path
 
 from fastmcp.server.auth.providers.in_memory import InMemoryOAuthProvider
-from mcp.server.auth.provider import AccessToken
+from mcp.server.auth.provider import AccessToken, RefreshToken
 from mcp.server.auth.settings import ClientRegistrationOptions
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
@@ -79,6 +79,21 @@ CLAUDE_AI_CALLBACK = "https://claude.ai/api/mcp/auth_callback"
 # Persistent location for DCR-registered clients. Lives on the shared
 # /data volume so registrations survive container restarts. 1.1.5 fix.
 DEFAULT_CLIENT_STORE_PATH = Path("/data/mcp_oauth_clients.json")
+
+
+# 1.1.17 — persistent location for issued OAuth tokens (access + refresh
+# + the two association maps). Same /data volume, same trust boundary as
+# the client store, jwt_secret, and secrets.enc.
+#
+# Why this exists: the upstream InMemoryOAuthProvider holds all issued
+# access + refresh tokens in memory, so a container restart (every
+# redeploy) wiped them. A client (KAIROS, claude.ai) still holding a
+# refresh token from before the restart would try to refresh, the freshly
+# booted MCP had no record of it, and the /token endpoint returned
+# "invalid_grant: refresh token does not exist" — forcing a full manual
+# re-authorization on every redeploy. Persisting the token tables makes a
+# restart transparent to already-connected clients.
+DEFAULT_TOKEN_STORE_PATH = Path("/data/mcp_oauth_tokens.json")
 
 
 # 1.1.9 SECURITY — DCR is now off by default.
@@ -154,12 +169,18 @@ class UrsaOscarOAuthProvider(InMemoryOAuthProvider):
         static_bearer_token: str | None = None,
         jwt_secret: str | None = None,
         client_store_path: Path | None = None,
+        token_store_path: Path | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self._static_bearer = static_bearer_token
         self._jwt_secret = jwt_secret
         self._client_store_path = client_store_path or DEFAULT_CLIENT_STORE_PATH
+        # 1.1.17 — where issued OAuth tokens persist across restart. Loaded
+        # by build_auth_provider AFTER the pre-registered client is wired
+        # (NOT here) — see _load_persisted_tokens for why the ordering
+        # matters.
+        self._token_store_path = token_store_path or DEFAULT_TOKEN_STORE_PATH
         # Set by build_auth_provider after construction. The pre-registered
         # client_id is excluded from persistence (always reconstructed from
         # env vars at startup).
@@ -286,6 +307,151 @@ class UrsaOscarOAuthProvider(InMemoryOAuthProvider):
                 "container restart. Check /data is writable.",
                 client_info.client_id,
             )
+
+    # ----- token persistence across restart (1.1.17) -----
+
+    def _load_persisted_tokens(self) -> None:
+        """Restore issued access + refresh tokens (and their association
+        maps) from disk so a container restart is transparent to
+        already-connected clients.
+
+        MUST be called AFTER the full client set is populated (DCR clients
+        loaded in __init__ + the pre-registered client added by
+        build_auth_provider), because it filters tokens by known client
+        id — see below.
+
+        Three safety filters, all deliberate:
+          1. Drop expired tokens (access always has an expiry; refresh may
+             not). Never resurrect a dead credential.
+          2. Drop any token whose client_id is not a currently-known
+             client. This preserves the 1.1.9 guarantee: when DCR is off,
+             clients that self-registered during the 1.1.5-1.1.8 open
+             window are NOT reloaded, so their tokens die with them — a
+             restart can't be used to revive an open-window session.
+          3. Rebuild the association maps keeping only entries where BOTH
+             ends survived. A refresh token whose access token expired is
+             kept with no map entry — exactly the post-expiry state the
+             1.1.6 fix produces, and the refresh flow looks tokens up
+             directly, not via the map.
+        """
+        path = self._token_store_path
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(
+                "Persisted token store at %s is unreadable; connected "
+                "clients will need to re-authorize after this restart: %s",
+                path, e,
+            )
+            return
+
+        now = time.time()
+        known_clients = set(self.clients.keys())
+
+        def _fresh(entry: dict) -> bool:
+            exp = entry.get("expires_at")
+            return exp is None or exp > now
+
+        access_loaded = 0
+        for tok, entry in (data.get("access_tokens") or {}).items():
+            try:
+                if not _fresh(entry) or entry.get("client_id") not in known_clients:
+                    continue
+                self.access_tokens[tok] = AccessToken(**entry)
+                access_loaded += 1
+            except Exception as e:
+                logger.warning("Skipping corrupt persisted access token: %s", e)
+
+        refresh_loaded = 0
+        for tok, entry in (data.get("refresh_tokens") or {}).items():
+            try:
+                if not _fresh(entry) or entry.get("client_id") not in known_clients:
+                    continue
+                self.refresh_tokens[tok] = RefreshToken(**entry)
+                refresh_loaded += 1
+            except Exception as e:
+                logger.warning("Skipping corrupt persisted refresh token: %s", e)
+
+        # Rebuild maps only where both ends survived the filters above.
+        for a, r in (data.get("access_to_refresh") or {}).items():
+            if a in self.access_tokens and r in self.refresh_tokens:
+                self._access_to_refresh_map[a] = r
+                self._refresh_to_access_map[r] = a
+
+        if access_loaded or refresh_loaded:
+            logger.info(
+                "Restored %d access + %d refresh token(s) from %s — "
+                "connected clients survive this restart without re-auth",
+                access_loaded, refresh_loaded, path,
+            )
+
+    def _save_persisted_tokens(self) -> None:
+        """Atomically write the current token tables to disk. Called after
+        every mutation that mints, rotates, or revokes a token. Mode 0600,
+        tmpfile + rename, under the same lock as the client store."""
+        with self._store_lock:
+            payload = {
+                "access_tokens": {
+                    t: obj.model_dump(mode="json")
+                    for t, obj in self.access_tokens.items()
+                },
+                "refresh_tokens": {
+                    t: obj.model_dump(mode="json")
+                    for t, obj in self.refresh_tokens.items()
+                },
+                "access_to_refresh": dict(self._access_to_refresh_map),
+            }
+            path = self._token_store_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tokens.tmp")
+            tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            tmp.replace(path)
+            try:
+                os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                # Non-POSIX filesystem — the data dir is operator-only there.
+                pass
+
+    async def _save_tokens_async(self) -> None:
+        """Run the blocking save off the event loop; log and swallow on
+        failure. A persistence failure must never break the live OAuth
+        exchange for the caller in front of us — worst case is that this
+        one grant won't survive a restart, which is exactly the pre-1.1.17
+        behavior."""
+        try:
+            await asyncio.to_thread(self._save_persisted_tokens)
+        except Exception:
+            logger.exception(
+                "Failed to persist OAuth tokens to %s; this grant is "
+                "in-memory only and won't survive a restart. Check /data "
+                "is writable.", self._token_store_path,
+            )
+
+    async def exchange_authorization_code(self, client, authorization_code):
+        """Mint access+refresh (parent), then persist so the new grant
+        survives a restart. The MCP-401 fix: this is where a fresh
+        connection's tokens are born."""
+        result = await super().exchange_authorization_code(client, authorization_code)
+        await self._save_tokens_async()
+        return result
+
+    async def exchange_refresh_token(self, client, refresh_token, scopes):
+        """Rotate the refresh token (parent revokes old + mints new), then
+        persist so the rotation isn't lost on the next restart — otherwise
+        a client that refreshed post-restart would be handed a token the
+        disk never recorded, and the NEXT restart would 401 it again."""
+        result = await super().exchange_refresh_token(client, refresh_token, scopes)
+        await self._save_tokens_async()
+        return result
+
+    async def revoke_token(self, token):
+        """Explicit revocation (parent cascades), then persist so a revoked
+        token stays revoked across a restart — never resurrect it."""
+        result = await super().revoke_token(token)
+        await self._save_tokens_async()
+        return result
 
     # ----- access-token expiry cleanup (1.1.6) -----
 
@@ -491,6 +657,15 @@ def build_auth_provider() -> UrsaOscarOAuthProvider:
         scope=None,
     )
     provider.preregistered_client_id = pre_id
+
+    # 1.1.17 — restore persisted OAuth tokens NOW, after the full client
+    # set exists (DCR clients from __init__ + the pre-registered client
+    # just added). _load_persisted_tokens filters tokens by known client,
+    # so loading earlier would drop every pre-registered-client token and
+    # defeat the whole point. See _load_persisted_tokens for the ordering
+    # contract.
+    provider._load_persisted_tokens()
+
     logger.info(
         "Pre-registered claude.ai client client_id=%s allowed_redirects=%s "
         "(DCR=%s; %s)",
