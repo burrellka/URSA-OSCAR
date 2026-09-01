@@ -26,6 +26,7 @@ the threat model for the rest of the stored state.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import stat
@@ -47,6 +48,23 @@ logger = logging.getLogger(__name__)
 # expiration — gives operators a comfortable buffer without making
 # rotation overly aggressive.
 RENEW_BEFORE = timedelta(days=7)
+
+# 1.1.16 — how often the background renewal loop re-checks the tokens.
+#
+# The bug this closes: before 1.1.16, ``ensure_all_service_tokens`` ran
+# ONLY at API startup. The API mints a 90-day token; it re-mints at
+# startup if the token is within RENEW_BEFORE (7 days) of expiring. But
+# with no runtime renewal, an API container that stays up longer than
+# ~83 days never gets that startup event — the 90-day token lapses and
+# the MCP + watcher start getting 401s until someone restarts the API.
+# That's exactly the failure a homelab hits, because containers there run
+# for months.
+#
+# 6 hours gives the 7-day renewal window many chances to fire before
+# expiry, while the check itself is nearly free on the ~99.99% of runs
+# where the token isn't near expiry (a decode + a timestamp compare, no
+# write). It only writes once per ~83 days per service.
+RENEW_CHECK_INTERVAL = timedelta(hours=6)
 
 ServiceName = Literal["mcp", "watcher"]
 
@@ -170,3 +188,54 @@ def read_service_token(data_dir: Path, service: ServiceName) -> str | None:
     have the signing secret); validation happens server-side when the
     API receives the bearer header."""
     return _read_token(_service_token_path(data_dir, service))
+
+
+async def service_token_renewal_loop(
+    data_dir: Path,
+    secret: str,
+    *,
+    interval: timedelta = RENEW_CHECK_INTERVAL,
+) -> None:
+    """1.1.16 — background renewal so a long-running API never lets its
+    service tokens lapse.
+
+    Spawned once from the API lifespan alongside the import worker. Every
+    ``interval`` it re-runs ``ensure_all_service_tokens`` — which re-mints
+    only when a token is within RENEW_BEFORE of expiry, so this is cheap on
+    almost every pass. This is what turns "restart the API every ~3 months
+    or the MCP starts 401ing" into "it takes care of itself."
+
+    Robust by construction:
+      - The blocking file IO runs in a thread so it never stalls the event
+        loop.
+      - A failure in one pass is logged and swallowed; the loop lives to
+        try again next interval. A transient issue (e.g. the volume briefly
+        unwritable) must not kill renewal permanently.
+      - CancelledError propagates so shutdown is clean.
+    """
+    interval_s = interval.total_seconds()
+    logger.info(
+        "service-token renewal loop started (every %s); tokens renew "
+        "automatically within %s of expiry — no API restart required",
+        interval, RENEW_BEFORE,
+    )
+    while True:
+        try:
+            await asyncio.sleep(interval_s)
+        except asyncio.CancelledError:
+            logger.info("service-token renewal loop stopping")
+            raise
+        try:
+            # ensure_all_service_tokens is sync + touches the filesystem;
+            # keep it off the event loop.
+            await asyncio.to_thread(ensure_all_service_tokens, data_dir, secret)
+        except asyncio.CancelledError:
+            logger.info("service-token renewal loop stopping")
+            raise
+        except Exception:
+            # Never let a single bad pass kill the loop — renewal is a
+            # safety mechanism and must be more durable than the thing it
+            # protects.
+            logger.exception(
+                "service-token renewal check failed; retrying in %s", interval,
+            )

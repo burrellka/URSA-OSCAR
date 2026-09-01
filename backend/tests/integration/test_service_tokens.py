@@ -174,3 +174,119 @@ def test_unreadable_file_treated_as_missing(tmp_path: Path):
     token = ensure_service_token(tmp_path, SECRET, "mcp")
     assert token
     assert path.read_text(encoding="utf-8").strip() == token
+
+
+# ---------------------------------------------------------------------------
+# 1.1.16 — background renewal loop.
+#
+# The mechanism (ensure_service_token re-mints an expiring token) is covered
+# above. These cover the LOOP that closes the actual gap: startup-only
+# minting meant an API up >90 days let its 90-day token lapse and 401 the
+# MCP/watcher. The loop renews on a timer regardless of uptime.
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+from ursa_oscar.auth.service_tokens import (  # noqa: E402
+    RENEW_CHECK_INTERVAL,
+    service_token_renewal_loop,
+)
+
+
+def _write_expiring_token(tmp_path: Path, service: str) -> str:
+    """Write a token that's inside the RENEW_BEFORE window so the next
+    renewal check re-mints it. Issued ~88 days ago → expires in ~2 days."""
+    issued = datetime.now(timezone.utc) - API_TOKEN_LIFETIME + timedelta(days=2)
+    stale = encode_token(SECRET, kind="api", now=issued)
+    path = _service_token_path(tmp_path, service)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(stale, encoding="utf-8")
+    return stale
+
+
+async def test_renewal_loop_remints_expiring_tokens(tmp_path: Path):
+    """The core durability guarantee: a token about to expire gets renewed
+    by the loop with NO restart. Uses a tiny interval so the first pass
+    fires immediately."""
+    stale_mcp = _write_expiring_token(tmp_path, "mcp")
+    stale_watcher = _write_expiring_token(tmp_path, "watcher")
+
+    task = asyncio.create_task(
+        service_token_renewal_loop(
+            tmp_path, SECRET, interval=timedelta(seconds=0.01),
+        )
+    )
+    # Let a couple of passes run, then stop cleanly.
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    fresh_mcp = read_service_token(tmp_path, "mcp")
+    fresh_watcher = read_service_token(tmp_path, "watcher")
+    # Both re-minted (different token), and now well outside the renew window.
+    assert fresh_mcp and fresh_mcp != stale_mcp
+    assert fresh_watcher and fresh_watcher != stale_watcher
+    exp = decode_token(SECRET, fresh_mcp)["exp"]
+    expires_at = datetime.fromtimestamp(exp, tz=timezone.utc)
+    assert expires_at - datetime.now(timezone.utc) > RENEW_BEFORE
+
+
+async def test_renewal_loop_leaves_healthy_tokens_alone(tmp_path: Path):
+    """A fresh token must NOT be re-minted every pass — the check is cheap
+    precisely because it's a no-op until near expiry."""
+    fresh = ensure_service_token(tmp_path, SECRET, "mcp")  # 90 days out
+    task = asyncio.create_task(
+        service_token_renewal_loop(
+            tmp_path, SECRET, interval=timedelta(seconds=0.01),
+        )
+    )
+    await asyncio.sleep(0.1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # Same token — no churn.
+    assert read_service_token(tmp_path, "mcp") == fresh
+
+
+async def test_renewal_loop_survives_a_failing_pass(tmp_path: Path, monkeypatch):
+    """Renewal is a safety net; one bad pass (e.g. volume briefly
+    unwritable) must not kill it permanently. After a failure it keeps
+    running and recovers on the next pass."""
+    import ursa_oscar.auth.service_tokens as st
+
+    calls = {"n": 0}
+    real = st.ensure_all_service_tokens
+
+    def flaky(data_dir, secret, *, now=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("simulated transient volume error")
+        return real(data_dir, secret, now=now)
+
+    monkeypatch.setattr(st, "ensure_all_service_tokens", flaky)
+    _write_expiring_token(tmp_path, "mcp")
+
+    task = asyncio.create_task(
+        service_token_renewal_loop(
+            tmp_path, SECRET, interval=timedelta(seconds=0.01),
+        )
+    )
+    await asyncio.sleep(0.1)
+    is_alive = not task.done()  # survived the first-pass exception
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert is_alive, "loop died on a failing pass instead of retrying"
+    assert calls["n"] >= 2, "loop did not retry after the failing pass"
+    # And it recovered: the token got re-minted on a later pass.
+    assert read_service_token(tmp_path, "mcp")
+
+
+def test_renew_check_interval_is_safely_inside_the_window():
+    """The check must run many times inside the 7-day renew window, or a
+    token could slip past expiry between checks."""
+    assert RENEW_CHECK_INTERVAL < RENEW_BEFORE
+    # Comfortably many chances, not just barely.
+    assert RENEW_BEFORE / RENEW_CHECK_INTERVAL >= 14

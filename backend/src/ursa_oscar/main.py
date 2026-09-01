@@ -6,6 +6,8 @@ to share. The MCP server container opens its own read-only DuckDB connection
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI
@@ -21,6 +23,7 @@ from .auth.store import AuthStore
 from .auth.service_tokens import (
     ServiceTokenError,
     ensure_all_service_tokens,
+    service_token_renewal_loop,
 )
 from .auth.tokens import resolve_jwt_secret
 from .api import (
@@ -33,6 +36,37 @@ from .services.import_worker import ImportWorker
 from .storage import profile_store, vocab_store
 from .storage.db import DuckDBManager
 from .storage.migrations import apply_migrations
+
+logger = logging.getLogger(__name__)
+
+
+def _configure_logging() -> None:
+    """1.1.16 — make URSA's own INFO logs visible under uvicorn.
+
+    This is not cosmetic. uvicorn installs handlers for its OWN loggers
+    (uvicorn / uvicorn.access) and leaves the root logger at WARNING, so
+    every ``logging.getLogger("ursa_oscar...").info(...)`` call in the
+    codebase was silently dropped — including the service-token mint /
+    renewal lines. That is why a 90-day token expiring (the MCP-401
+    incident) was invisible in ``docker logs``: the app was saying
+    "minted fresh" and "renewal loop started" and none of it reached
+    stdout.
+
+    Attach one handler to the ``ursa_oscar`` package logger; don't
+    reconfigure root and fight uvicorn for its output. Idempotent — safe
+    if the app factory is built more than once (tests do this).
+    """
+    pkg = logging.getLogger("ursa_oscar")
+    if pkg.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(levelname)-8s %(name)s: %(message)s")
+    )
+    pkg.addHandler(handler)
+    pkg.setLevel(logging.INFO)
+    # Don't double-emit if something ever adds a root handler.
+    pkg.propagate = False
 
 
 @asynccontextmanager
@@ -49,6 +83,9 @@ async def lifespan(app: FastAPI):
     process; it's stopped on shutdown so the container can exit
     cleanly without leaking the task.
     """
+    # 1.1.16 — make our own logs visible under uvicorn BEFORE anything runs
+    # that logs (migrations, secret generation, token minting all log here).
+    _configure_logging()
     settings = get_settings()
     db = DuckDBManager(settings.db_path, read_only=False)
     apply_migrations(db)
@@ -108,12 +145,30 @@ async def lifespan(app: FastAPI):
             "URSA_OSCAR_WATCHER_TOKEN env vars to function."
         )
 
+    # 1.1.16 — background service-token renewal. Startup minting alone let
+    # a >90-day-uptime API expire its token and 401 the MCP + watcher; this
+    # loop renews within the 7-day window regardless of uptime. Spawned only
+    # when a secret exists (without one, ensure_all_service_tokens above
+    # already logged the failure and there's nothing to renew).
+    renewal_task: asyncio.Task | None = None
+    if app.state.jwt_secret:
+        renewal_task = asyncio.create_task(
+            service_token_renewal_loop(data_dir, app.state.jwt_secret),
+            name="service-token-renewal",
+        )
+
     worker = ImportWorker(db)
     worker.start()
     app.state.import_worker = worker
     try:
         yield
     finally:
+        if renewal_task is not None:
+            renewal_task.cancel()
+            try:
+                await renewal_task
+            except (asyncio.CancelledError, Exception):
+                pass
         await worker.stop()
         db.close()
 
